@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+debug.log
+*.log
+.env
+.env.*
+mqtt_secrets.json
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.lnk

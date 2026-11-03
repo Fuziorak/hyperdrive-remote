@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hyperdrive Remote</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <div class="track-lines" aria-hidden="true"></div>
+  <div class="asphalt" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div>
+        <p class="brand-kicker">UNIFR · Robotics</p>
+        <h1>Hyperdrive Remote</h1>
+      </div>
+    </div>
+    <div class="status-cluster">
+      <div class="pill" id="mqttPill" data-state="off">
+        <span class="dot"></span>
+        <span id="mqttLabel">MQTT déconnecté</span>
+      </div>
+      <div class="pill subtle" id="scanPill">
+        <span id="scanLabel">Scan off</span>
+      </div>
+      <div class="pill subtle" id="callerPill">
+        <span>ID</span>
+        <code id="callerIdLabel">—</code>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="hero-select panel" id="selectedHero">
+      <div class="hero-copy">
+        <p class="hero-kicker">Véhicule sélectionné</p>
+        <h2 id="heroTitle">Aucun</h2>
+        <p id="heroMeta">Clique un véhicule dans la liste pour commencer</p>
+      </div>
+      <div class="hero-car" aria-hidden="true">
+        <div class="car-body"></div>
+        <div class="car-glow"></div>
+      </div>
+      <div class="hero-actions">
+        <button id="btnHeroConnect" class="btn primary" type="button">Connecter</button>
+        <button id="btnHeroPanic" class="btn danger" type="button">STOP</button>
+      </div>
+    </section>
+
+    <section class="panel fleet-panel">
+      <div class="panel-head">
+        <h2>Garage</h2>
+        <p>Véhicules détectés · un clic pour commander</p>
+      </div>
+      <div id="vehicleList" class="vehicle-list">
+        <p class="empty">Scan en cours ou aucun véhicule encore…</p>
+      </div>
+      <details class="advanced">
+        <summary>Ajout manuel</summary>
+        <div class="manual-add">
+          <input id="manualId" type="text" placeholder="ID véhicule" />
+          <input id="manualModel" type="text" placeholder="Modèle (optionnel)" />
+          <button id="btnAddManual" class="btn secondary" type="button">Ajouter</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel race-panel">
+      <div class="panel-head">
+        <h2>Chrono</h2>
+        <p>Mode course</p>
+      </div>
+      <div class="race-timer-block big">
+        <span class="race-label">Temps</span>
+        <div id="raceTimer" class="race-timer">00:00.00</div>
+      </div>
+      <div class="race-mini">
+        <div class="race-stat"><span class="race-label">Tour</span><strong id="raceLapCurrent">—</strong></div>
+        <div class="race-stat"><span class="race-label">Best</span><strong id="raceBest">—</strong></div>
+        <div class="race-stat"><span class="race-label">#</span><strong id="raceLapCount">0</strong></div>
+      </div>
+      <div class="btn-row race-actions">
+        <button id="btnRaceStart" class="btn primary" type="button">Départ</button>
+        <button id="btnRaceLap" class="btn accent" type="button">Tour</button>
+        <button id="btnRaceStop" class="btn ghost" type="button">Fin</button>
+        <button id="btnRaceReset" class="btn ghost" type="button">Reset</button>
+        <button id="btnRacePanic" class="btn danger" type="button">STOP ALL</button>
+      </div>
+      <div id="raceLapList" class="race-laps"></div>
+    </section>
+
+    <section class="panel profiles-panel">
+      <div class="panel-head">
+        <h2>Profils</h2>
+        <p>Presets rapides</p>
+      </div>
+      <div id="profileList" class="profile-list"></div>
+      <details class="advanced">
+        <summary>Sauver un profil</summary>
+        <div class="profile-save">
+          <input id="profileName" type="text" placeholder="Nom du profil" />
+          <select id="profileTarget">
+            <option value="A">Depuis piste A</option>
+            <option value="B">Depuis piste B</option>
+          </select>
+          <button id="btnSaveProfile" class="btn secondary" type="button">Sauver</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="cockpits" id="cockpits">
+      <article class="panel cockpit" data-slot="A">
+        <div class="cockpit-head">
+          <div>
+            <p class="slot-tag">Piste A · principal</p>
+            <h2 class="cockpit-title">Libre</h2>
+            <p class="cockpit-id">Sélectionne un véhicule</p>
+          </div>
+          <div class="btn-row tight">
+            <button class="btn primary btn-connect" type="button">Connecter</button>
+            <button class="btn ghost btn-disconnect" type="button">Off</button>
+            <button class="btn accent btn-assert" type="button">Réappliquer</button>
+            <button class="btn danger btn-panic" type="button">STOP</button>
+            <button class="btn ghost btn-clear-slot" type="button">Retirer</button>
+          </div>
+        </div>
+        <div class="hold-bar compact">
+          <label class="hold-toggle">
+            <input class="hold-toggle-input" type="checkbox" />
+            <span>Maintenir le contrôle</span>
+          </label>
+        </div>
+        <div class="telemetry">
+          <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
+          <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
+          <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
+          <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
+          <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
+        </div>
+        <div class="control-grid">
+          <div class="card-block">
+            <h3>Vitesse</h3>
+            <div class="slider-block">
+              <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
+              <div class="slider-meta">
+                <output class="speed-value">0</output>
+                <span>mm/s ≈</span>
+              </div>
+            </div>
+            <label class="inline">
+              Accélération
+              <input class="accel-input" type="number" min="0" max="2000" value="1000" />
+            </label>
+            <div class="btn-row tight speed-presets"></div>
+          </div>
+          <div class="card-block">
+            <h3>Voie</h3>
+            <div class="slider-block">
+              <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
+              <div class="slider-meta">
+                <output class="lane-value">0</output>
+                <span>offset</span>
+              </div>
+            </div>
+            <div class="btn-row tight">
+              <button class="btn secondary btn-lane" type="button">Changer de voie</button>
+              <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
+            </div>
+          </div>
+          <div class="card-block span-2">
+            <h3>Feux</h3>
+            <div class="presets light-presets"></div>
+            <details class="advanced">
+              <summary>Réglages feux avancés</summary>
+              <div class="lights-grid"></div>
+              <div class="btn-row" style="margin-top:0.7rem">
+                <button class="btn accent btn-lights" type="button">Envoyer feux</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel cockpit" data-slot="B">
+        <div class="cockpit-head">
+          <div>
+            <p class="slot-tag slot-b">Piste B · optionnel</p>
+            <h2 class="cockpit-title">Libre</h2>
+            <p class="cockpit-id">Bouton +B sur un véhicule</p>
+          </div>
+          <div class="btn-row tight">
+            <button class="btn primary btn-connect" type="button">Connecter</button>
+            <button class="btn ghost btn-disconnect" type="button">Off</button>
+            <button class="btn accent btn-assert" type="button">Réappliquer</button>
+            <button class="btn danger btn-panic" type="button">STOP</button>
+            <button class="btn ghost btn-clear-slot" type="button">Retirer</button>
+          </div>
+        </div>
+        <div class="hold-bar compact">
+          <label class="hold-toggle">
+            <input class="hold-toggle-input" type="checkbox" />
+            <span>Maintenir le contrôle</span>
+          </label>
+        </div>
+        <div class="telemetry">
+          <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
+          <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
+          <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
+          <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
+          <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
+        </div>
+        <div class="control-grid">
+          <div class="card-block">
+            <h3>Vitesse</h3>
+            <div class="slider-block">
+              <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
+              <div class="slider-meta">
+                <output class="speed-value">0</output>
+                <span>mm/s ≈</span>
+              </div>
+            </div>
+            <label class="inline">
+              Accélération
+              <input class="accel-input" type="number" min="0" max="2000" value="1000" />
+            </label>
+            <div class="btn-row tight speed-presets"></div>
+          </div>
+          <div class="card-block">
+            <h3>Voie</h3>
+            <div class="slider-block">
+              <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
+              <div class="slider-meta">
+                <output class="lane-value">0</output>
+                <span>offset</span>
+              </div>
+            </div>
+            <div class="btn-row tight">
+              <button class="btn secondary btn-lane" type="button">Changer de voie</button>
+              <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
+            </div>
+          </div>
+          <div class="card-block span-2">
+            <h3>Feux</h3>
+            <div class="presets light-presets"></div>
+            <details class="advanced">
+              <summary>Réglages feux avancés</summary>
+              <div class="lights-grid"></div>
+              <div class="btn-row" style="margin-top:0.7rem">
+                <button class="btn accent btn-lights" type="button">Envoyer feux</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <details class="panel advanced-panel">
+      <summary>
+        <span>Réglages réseau & journal</span>
+        <span class="summary-hint">MQTT · logs</span>
+      </summary>
+      <div class="advanced-body">
+        <div class="form-grid">
+          <label>
+            Broker
+            <input id="brokerHost" type="text" value="10.42.0.1" autocomplete="off" />
+          </label>
+          <label>
+            Port
+            <input id="brokerPort" type="number" value="1883" />
+          </label>
+          <label>
+            Host ID
+            <input id="hostId" type="text" value="1" />
+          </label>
+          <label>
+            MQTT user
+            <input id="mqttUsername" type="text" value="Your_mom" autocomplete="username" />
+          </label>
+          <label>
+            MQTT password
+            <input id="mqttPassword" type="password" value="" placeholder="(vide si aucun)" autocomplete="current-password" />
+          </label>
+        </div>
+        <div class="btn-row">
+          <button id="btnConnect" class="btn primary" type="button">Reconnecter MQTT</button>
+          <button id="btnDisconnect" class="btn ghost" type="button">Déconnecter</button>
+          <button id="btnDiscover" class="btn accent" type="button">Rescanner</button>
+          <button id="btnStopScan" class="btn ghost" type="button">Stop scan</button>
+        </div>
+        <p class="hint">Au lancement : connexion + scan auto sur le Wi‑Fi <code>hyperdrive</code>.</p>
+        <div class="panel-head" style="margin-top:1rem">
+          <h2 style="font-size:1.2rem">Debug fichier</h2>
+        </div>
+        <p class="hint" id="debugPath">Fichier : <code>hyperdrive-remote/debug.log</code></p>
+        <div class="btn-row">
+          <button id="btnDebugSnapshot" class="btn secondary" type="button">Snapshot réseau</button>
+          <button id="btnDebugClear" class="btn ghost" type="button">Vider debug.log</button>
+          <button id="btnDebugOpenHint" class="btn ghost" type="button">Où est le fichier ?</button>
+        </div>
+        <div class="panel-head" style="margin-top:1rem">
+          <h2 style="font-size:1.2rem">Journal MQTT</h2>
+          <button id="btnClearLog" class="btn ghost tiny" type="button">Vider</button>
+        </div>
+        <pre id="log" class="log"></pre>
+      </div>
+    </details>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
