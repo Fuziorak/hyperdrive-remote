@@ -23,6 +23,8 @@ DEFAULT_HOST = "10.42.0.1"
 DEFAULT_PORT = 1883
 DEFAULT_USER = "Your_mom"
 DEFAULT_PASSWORD = ""  # set in UI if MQTT Explorer uses one
+# Lab host id observed on broker: Anki/Hosts/U/hyperdrive/...
+DEFAULT_HOST_ID = "hyperdrive"
 
 
 class MqttBridge:
@@ -32,7 +34,7 @@ class MqttBridge:
         port: int = DEFAULT_PORT,
         username: str = DEFAULT_USER,
         password: str = DEFAULT_PASSWORD,
-        host_id: str = "1",
+        host_id: str = DEFAULT_HOST_ID,
         caller_id: str | None = None,
     ) -> None:
         self.host = host
@@ -53,6 +55,9 @@ class MqttBridge:
         self._hold_stop = threading.Event()
         self._hold_thread: threading.Thread | None = None
         self._subscribed_vehicles: set[str] = set()
+        self._base_topics: list[str] = []
+        self._reconnect_lock = threading.Lock()
+        self._announced: set[str] = set()
 
     # ----- public API used by app.py -----
 
@@ -177,6 +182,7 @@ class MqttBridge:
 
     def connect_vehicle(self, vehicle_id: str, enable: bool = True) -> None:
         self._subscribe_vehicle(vehicle_id)
+        self._remember(vehicle_id, connect=bool(enable))
         self._publish(f"Anki/Vehicles/U/{vehicle_id}/I/{self.caller_id}", {
             "type": "connect",
             "payload": {"value": enable},
@@ -254,6 +260,12 @@ class MqttBridge:
     def assert_control(self, vehicle_id: str) -> dict[str, Any]:
         cfg = self._desired.get(vehicle_id) or {}
         applied: dict[str, Any] = {}
+        if cfg.get("connect"):
+            self._publish(f"Anki/Vehicles/U/{vehicle_id}/I/{self.caller_id}", {
+                "type": "connect",
+                "payload": {"value": True},
+            })
+            applied["connect"] = True
         if "velocity" in cfg:
             self.set_speed(vehicle_id, cfg["velocity"], cfg.get("acceleration", 1000))
             applied["speed"] = True
@@ -301,7 +313,9 @@ class MqttBridge:
             client_id=client_id,
             protocol=mqtt.MQTTv311,
             clean_session=True,
+            reconnect_on_failure=True,
         )
+        client.reconnect_delay_set(min_delay=1, max_delay=20)
         # MQTT Explorer profile has username but NO password field → do not send empty password.
         if self.username:
             pw = self.password if self.password else None
@@ -310,6 +324,7 @@ class MqttBridge:
 
         connected = threading.Event()
         failed_reason: list[str] = []
+        first_connect = {"done": False}
 
         def on_connect(c, userdata, flags, reason_code, properties=None):
             ok = mqtt_rc_ok(reason_code)
@@ -319,13 +334,24 @@ class MqttBridge:
                 ok=ok,
                 reason=mqtt_rc_str(reason_code),
                 flags=str(flags),
+                sessionPresent=getattr(flags, "session_present", None),
             )
-            if ok:
-                self._connected = True
-                connected.set()
-            else:
+            if not ok:
                 failed_reason.append(mqtt_rc_str(reason_code))
                 connected.set()
+                return
+            self._connected = True
+            connected.set()
+            try:
+                self._apply_subscriptions(c)
+            except Exception as exc:
+                debug_log.exception("mqtt", "subscribe after connect failed", exc)
+            # Re-claim control after drop (other clients / BLE glitches)
+            threading.Thread(target=self._reassert_all, name="mqtt-reassert", daemon=True).start()
+            if first_connect["done"]:
+                debug_log.info("mqtt", "auto-reconnected — subscriptions + hold restored")
+            first_connect["done"] = True
+            self._emit({"type": "mqttConnected", "broker": f"{self.host}:{self.port}"})
 
         def on_disconnect(c, userdata, flags, reason_code, properties=None):
             debug_log.warn("mqtt", "on_disconnect", reason=mqtt_rc_str(reason_code))
@@ -337,7 +363,7 @@ class MqttBridge:
                 payload = json.loads(msg.payload.decode("utf-8"))
             except Exception:
                 payload = {"raw": msg.payload.decode("utf-8", errors="replace")}
-            self._emit({"type": "mqttIn", "topic": msg.topic, "payload": payload})
+            # Do not flood UI/debug with every battery tick — route only.
             self._route(msg.topic, payload)
 
         client.on_connect = on_connect
@@ -348,7 +374,6 @@ class MqttBridge:
             self._client = client
 
         try:
-            # Classic paho pattern (same family as most working samples):
             client.connect(self.host, self.port, keepalive=30)
             client.loop_start()
             if not connected.wait(timeout=12):
@@ -362,21 +387,6 @@ class MqttBridge:
                 self._emit({"type": "mqttError", "message": msg})
                 self.disconnect_broker()
                 return
-
-            # Host discovery events + vehicles already present on the broker
-            # (MQTT Explorer shows cars under Anki/Vehicles/U/{id}/ even without a new scan).
-            topics = [
-                f"Anki/Hosts/U/{self.host_id}/S/#",
-                f"Anki/Hosts/U/{self.host_id}/E/#",
-                "Anki/Hosts/U/+/E/#",
-                "Anki/Hosts/U/+/S/#",
-                "Anki/Vehicles/U/+/S/#",
-                "Anki/Vehicles/U/+/E/#",
-            ]
-            for t in topics:
-                client.subscribe(t, qos=1)
-            debug_log.info("mqtt", "subscribed", topics=topics)
-            self._emit({"type": "mqttConnected", "broker": f"{self.host}:{self.port}"})
         except Exception as exc:
             debug_log.exception("mqtt", "connect_sync failed", exc)
             self._emit({"type": "mqttError", "message": f"connect failed: {exc}"})
@@ -428,12 +438,14 @@ class MqttBridge:
 
     def _hold_loop(self, interval_s: float) -> None:
         while not self._hold_stop.wait(interval_s):
+            if not self._connected:
+                continue
             for vid, on in list(self._hold_enabled.items()):
                 if on:
                     try:
                         self.assert_control(vid)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        debug_log.warn("mqtt", "hold assert failed", vehicleId=vid, error=str(exc))
 
     def _emit(self, event: dict[str, Any]) -> None:
         event.setdefault("ts", time.time())
@@ -442,6 +454,34 @@ class MqttBridge:
                 listener(event)
             except Exception:
                 pass
+
+    def _base_subscribe_topics(self) -> list[str]:
+        return [
+            f"Anki/Hosts/U/{self.host_id}/S/#",
+            f"Anki/Hosts/U/{self.host_id}/E/#",
+            "Anki/Hosts/U/+/E/#",
+            "Anki/Hosts/U/+/S/#",
+            "Anki/Vehicles/U/+/S/#",
+            "Anki/Vehicles/U/+/E/#",
+        ]
+
+    def _apply_subscriptions(self, client: mqtt.Client) -> None:
+        self._base_topics = self._base_subscribe_topics()
+        for t in self._base_topics:
+            client.subscribe(t, qos=1)
+        # Re-subscribe per-vehicle patterns after reconnect
+        self._subscribed_vehicles.clear()
+        for vid in list(self._vehicles.keys()):
+            self._subscribe_vehicle(vid)
+        debug_log.info("mqtt", "subscribed", topics=self._base_topics)
+
+    def _reassert_all(self) -> None:
+        for vid, on in list(self._hold_enabled.items()):
+            if on:
+                try:
+                    self.assert_control(vid)
+                except Exception as exc:
+                    debug_log.warn("mqtt", "reassert failed", vehicleId=vid, error=str(exc))
 
     def _upsert_vehicle(
         self,
@@ -454,7 +494,6 @@ class MqttBridge:
     ) -> dict[str, Any]:
         if vid.upper().startswith("SIM"):
             return {}
-        is_new = False
         with self._lock:
             is_new = vid not in self._vehicles
             prev = self._vehicles.get(vid) or {
@@ -478,7 +517,18 @@ class MqttBridge:
                 prev["status"] = status
             self._vehicles[vid] = prev
             snap = dict(prev)
-        if is_new or announce:
+        # Announce only once — battery spam was flooding WS + killing responsiveness.
+        if is_new and vid not in self._announced:
+            self._announced.add(vid)
+            self._subscribe_vehicle(vid)
+            self._emit({
+                "type": "vehicleDiscovered",
+                "vehicleId": vid,
+                "model": snap.get("model"),
+                "rssi": snap.get("rssi"),
+            })
+        elif announce and vid not in self._announced:
+            self._announced.add(vid)
             self._subscribe_vehicle(vid)
             self._emit({
                 "type": "vehicleDiscovered",
@@ -489,7 +539,6 @@ class MqttBridge:
         return snap
 
     def _route(self, topic: str, payload: dict[str, Any]) -> None:
-        debug_log.info("mqtt", "message in", topic=topic, payload=payload)
         parts = topic.split("/")
 
         if "discovered" in parts:
@@ -512,35 +561,45 @@ class MqttBridge:
             vid = parts[3]
             if not vid or vid in {"I", "D"}:
                 return
-            self._upsert_vehicle(vid, announce=True)
+            self._upsert_vehicle(vid)
             with self._lock:
                 v = self._vehicles.setdefault(vid, {"id": vid, "connected": False, "status": "unknown"})
                 v["lastSeen"] = time.time()
                 leaf = parts[-1]
                 parent = parts[-2] if len(parts) >= 2 else ""
                 val = payload.get("value") if isinstance(payload, dict) else None
+                changed = False
                 if leaf == "connection" or parent == "connection":
                     if isinstance(val, bool):
                         v["connected"] = val
                         v["status"] = "connected" if val else "disconnected"
+                        changed = True
                 elif leaf == "status":
                     if isinstance(val, str):
                         v["status"] = val
                         v["connected"] = val == "connected"
+                        changed = True
                 elif leaf == "level" and "battery" in parts:
                     if isinstance(val, (int, float)):
                         v["batteryLevel"] = int(val)
+                        changed = True
                 elif leaf == "charging":
                     if isinstance(val, bool):
                         v["charging"] = val
+                        changed = True
                 elif leaf == "onTrack":
                     if isinstance(val, bool):
                         v["onTrack"] = val
+                        changed = True
                 elif leaf == "speed" and parent == "E":
                     if isinstance(val, (int, float)):
                         v["speed"] = int(val)
+                        changed = True
                 elif leaf == "rssi":
                     if isinstance(val, (int, float)):
                         v["rssi"] = int(val)
+                        changed = True
                 snap = dict(v)
-            self._emit({"type": "vehicleUpdate", "vehicleId": vid, "state": snap})
+            # Only push UI updates for meaningful telemetry (not every battery tick flood via WS logs)
+            if changed and leaf in {"status", "connection", "speed", "onTrack", "level", "rssi"}:
+                self._emit({"type": "vehicleUpdate", "vehicleId": vid, "state": snap})
