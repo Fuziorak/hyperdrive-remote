@@ -1,0 +1,15 @@
+---
+description: Commit and push every meaningful code change to GitHub
+alwaysApply: true
+---
+
+# Git : enregistrer chaque modification
+
+Après toute modification de code utile (fix, feature, fichiers projet) :
+
+1. `git status` + `git diff` + `git log -5 --oneline`
+2. Stage les fichiers pertinents (jamais `debug.log`, `.env`, secrets)
+3. Commit avec un message clair (pourquoi), style du dépôt
+4. `git push origin HEAD` sauf si l’utilisateur demande de ne pas pusher
+
+Ne pas committer de changements triviaux seuls (typo isolée sans impact) si l’utilisateur n’a rien demandé — mais dès qu’une tâche produit un résultat utilisable, commit + push.

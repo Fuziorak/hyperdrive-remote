@@ -1,27 +1,44 @@
 # Hyperdrive Remote
 
-Interface web event-driven pour piloter les véhicules Anki Overdrive via MQTT (réseau `hyperdrive`).
+Interface web event-driven pour piloter les véhicules Anki Overdrive via MQTT (réseau `hyperdrive` — UNIFR).
+
+**Repo :** [github.com/Fuziorak/hyperdrive-remote](https://github.com/Fuziorak/hyperdrive-remote)
 
 ## Prérequis
 
-1. Rejoindre le Wi‑Fi **SSID `hyperdrive`** / mot de passe **`hyperdrive`**
-2. Broker MQTT : `10.42.0.1:1883`
+1. Rejoindre le Wi‑Fi **SSID `hyperdrive`**
+2. Broker MQTT : `10.42.0.1:1883` (user MQTT Explorer : `Your_mom`, souvent sans mot de passe)
 3. Python 3.10+
 
 ## Installation
 
 ```bash
+git clone https://github.com/Fuziorak/hyperdrive-remote.git
 cd hyperdrive-remote
 pip install -r requirements.txt
 ```
 
 ## Lancer
 
+**Windows (recommandé) :** double-clic sur le raccourci bureau, ou :
+
+```bash
+wscript start_hyperdrive.vbs
+```
+
+**Manuel :**
+
 ```bash
 python app.py
 ```
 
-Ouvre ensuite [http://127.0.0.1:5050](http://127.0.0.1:5050).
+Puis ouvrir [http://127.0.0.1:5050](http://127.0.0.1:5050).
+
+**Test MQTT seul (sur le Wi‑Fi hyperdrive) :**
+
+```bash
+python test_mqtt.py
+```
 
 ## Utilisation
 
