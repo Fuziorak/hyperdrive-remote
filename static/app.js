@@ -8,8 +8,8 @@
       name: "Course",
       builtin: true,
       settings: {
-        velocity: 500,
-        acceleration: 1200,
+        velocity: 800,
+        acceleration: 1500,
         lane: 0,
         lightPreset: "green",
       },
@@ -435,7 +435,7 @@
 
   // ---------------- manual WASD drive ----------------
 
-  const MANUAL_DEFAULTS = { velocity: 400, lane: 0, acceleration: 1000 };
+  const MANUAL_DEFAULTS = { velocity: 700, lane: 0, acceleration: 1400 };
   const MANUAL_SPEED_STEP = 40;
   const MANUAL_LANE_STEP = 8;
   const MANUAL_HOLD_MS = 110;
@@ -848,7 +848,7 @@
   function wireCockpit(slot) {
     const root = cockpitEl(slot);
     const speedPresets = root.querySelector(".speed-presets");
-    speedPresets.innerHTML = [0, 200, 400, 600, 800]
+    speedPresets.innerHTML = [0, 400, 600, 800, 1000]
       .map((v) => `<button class="btn ghost" type="button" data-v="${v}">${v}</button>`)
       .join("");
 

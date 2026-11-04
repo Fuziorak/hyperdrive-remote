@@ -25,6 +25,8 @@ DEFAULT_USER = "Your_mom"
 DEFAULT_PASSWORD = ""  # set in UI if MQTT Explorer uses one
 # Lab host id observed on broker: Anki/Hosts/U/hyperdrive/...
 DEFAULT_HOST_ID = "hyperdrive"
+# Race hold: refresh speed often so the car never coasts between pulses.
+_HOLD_INTERVAL_S = 0.35
 
 
 class MqttBridge:
@@ -278,17 +280,19 @@ class MqttBridge:
 
     def set_speed(self, vehicle_id: str, velocity: int, acceleration: int = 1000) -> None:
         self._remember(vehicle_id, velocity=velocity, acceleration=acceleration)
+        self._publish_speed(vehicle_id, int(velocity), int(acceleration))
+        # Anki drops speed unless refreshed. Auto-hold = race cruise (speed-only ticks).
+        if int(velocity) > 0:
+            if not self._hold_enabled.get(vehicle_id):
+                self.set_hold(vehicle_id, True, interval_s=_HOLD_INTERVAL_S)
+        elif self._hold_enabled.get(vehicle_id):
+            self.set_hold(vehicle_id, False)
+
+    def _publish_speed(self, vehicle_id: str, velocity: int, acceleration: int) -> None:
         self._publish(f"Anki/Vehicles/U/{vehicle_id}/I/{self.caller_id}", {
             "type": "speed",
             "payload": {"velocity": int(velocity), "acceleration": int(acceleration)},
         })
-        # Anki/Hyperdrive drops speed after a few seconds unless reasserted.
-        # Auto-hold keeps the car moving; velocity 0 / panic turns hold off.
-        if int(velocity) > 0:
-            if not self._hold_enabled.get(vehicle_id):
-                self.set_hold(vehicle_id, True, interval_s=1.0)
-        elif self._hold_enabled.get(vehicle_id):
-            self.set_hold(vehicle_id, False)
 
     def set_lane(
         self,
@@ -362,7 +366,17 @@ class MqttBridge:
             })
             applied["connect"] = True
         if "velocity" in cfg:
-            self.set_speed(vehicle_id, cfg["velocity"], cfg.get("acceleration", 1000))
+            # Remember + publish without toggling hold (caller may be reconnect).
+            self._remember(
+                vehicle_id,
+                velocity=cfg["velocity"],
+                acceleration=cfg.get("acceleration", 1000),
+            )
+            self._publish_speed(
+                vehicle_id,
+                int(cfg["velocity"]),
+                int(cfg.get("acceleration", 1000)),
+            )
             applied["speed"] = True
         if "lane" in cfg:
             lane = cfg["lane"]
@@ -380,11 +394,16 @@ class MqttBridge:
         self._emit({"type": "assertControl", "vehicleId": vehicle_id, "applied": applied})
         return applied
 
-    def set_hold(self, vehicle_id: str, enabled: bool, interval_s: float = 1.5) -> None:
+    def set_hold(self, vehicle_id: str, enabled: bool, interval_s: float | None = None) -> None:
+        interval = float(interval_s if interval_s is not None else _HOLD_INTERVAL_S)
         self._hold_enabled[vehicle_id] = enabled
         if enabled and (self._hold_thread is None or not self._hold_thread.is_alive()):
             self._hold_stop.clear()
-            self._hold_thread = threading.Thread(target=self._hold_loop, args=(interval_s,), daemon=True)
+            self._hold_thread = threading.Thread(
+                target=self._hold_loop,
+                args=(interval,),
+                daemon=True,
+            )
             self._hold_thread.start()
         if not any(self._hold_enabled.values()):
             self._hold_stop.set()
@@ -571,16 +590,30 @@ class MqttBridge:
             if v is not None:
                 cfg[k] = v
 
+    def _hold_refresh_speed(self, vehicle_id: str) -> None:
+        """Race cruise: only re-send speed (no connect/lights/lane — those caused jerk)."""
+        cfg = self._desired.get(vehicle_id) or {}
+        if "velocity" not in cfg:
+            return
+        velocity = int(cfg["velocity"])
+        if velocity <= 0:
+            return
+        # Keep accel firm so any tiny coast is corrected immediately at race pace.
+        acceleration = int(cfg.get("acceleration", 1200))
+        self._publish_speed(vehicle_id, velocity, acceleration)
+
     def _hold_loop(self, interval_s: float) -> None:
-        while not self._hold_stop.wait(interval_s):
+        # Always use race interval even if an older caller passed 1.5s.
+        period = min(float(interval_s), _HOLD_INTERVAL_S)
+        while not self._hold_stop.wait(period):
             if not self._connected:
                 continue
             for vid, on in list(self._hold_enabled.items()):
                 if on:
                     try:
-                        self.assert_control(vid)
+                        self._hold_refresh_speed(vid)
                     except Exception as exc:
-                        debug_log.warn("mqtt", "hold assert failed", vehicleId=vid, error=str(exc))
+                        debug_log.warn("mqtt", "hold speed refresh failed", vehicleId=vid, error=str(exc))
 
     def _emit(self, event: dict[str, Any]) -> None:
         event.setdefault("ts", time.time())
