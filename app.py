@@ -403,20 +403,25 @@ def ws_events(ws):
 
 
 def _warmup_lab_connection() -> None:
-    """Best-effort MQTT connect + discover as soon as the server starts."""
+    """MQTT connect at startup; discover is also sent automatically on_connect."""
     import time
 
     def _run() -> None:
         time.sleep(0.4)
         try:
-            debug_log.info("warmup", "starting MQTT warmup")
+            debug_log.info("warmup", "starting MQTT warmup (+ discover on Anki/Hosts/U/I)")
             orch.connect_broker(force=True)
-            # Give the async MQTT handshake a moment; UI also auto-scans.
-            for _ in range(20):
+            for _ in range(40):
                 time.sleep(0.25)
                 if orch.is_connected:
+                    # discover() is also triggered in mqtt_bridge on_connect;
+                    # send again here to be sure the lab host starts scanning.
                     orch.discover(True)
-                    msg = f"Auto MQTT OK ({orch.broker_host}) · scan started · caller={orch.caller_id}"
+                    msg = (
+                        f"Auto MQTT OK ({orch.broker_host}) · "
+                        f"discover → Anki/Hosts/U/I/{orch.caller_id} · "
+                        f"caller={orch.caller_id}"
+                    )
                     print(msg)
                     debug_log.info("warmup", msg)
                     return

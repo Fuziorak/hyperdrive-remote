@@ -153,12 +153,19 @@ class MqttBridge:
         self._emit({"type": "mqttDisconnected", "reason": "client disconnect"})
 
     def discover(self, enable: bool = True) -> None:
+        """Publish HostIntent discover on Anki/Hosts/U/I/{callerID} (lab network scan)."""
         self._scanning = enable
-        intent = {"type": "discover", "payload": {"value": enable}}
-        # Per-host + global host intent (README: Anki/Hosts/U/I/{callerID})
-        self._publish(f"Anki/Hosts/U/{self.host_id}/I/{self.caller_id}", intent)
-        self._publish(f"Anki/Hosts/U/I/{self.caller_id}", intent)
-        self._emit({"type": "scanning", "value": enable})
+        intent = {"type": "discover", "payload": {"value": bool(enable)}}
+        # Global host intent — required to start BLE discovery on the lab hosts.
+        # Topic shape from Hyperdrive API: Anki/Hosts/U/I/{callerID}
+        topics = [
+            f"Anki/Hosts/U/I/{self.caller_id}",
+            f"Anki/Hosts/U/{self.host_id}/I/{self.caller_id}",
+        ]
+        for topic in topics:
+            self._publish(topic, intent)
+            debug_log.info("mqtt", "discover intent published", topic=topic, payload=intent)
+        self._emit({"type": "scanning", "value": bool(enable)})
 
     def register_vehicle_manual(self, vehicle_id: str, model: str | None = None) -> None:
         vehicle_id = vehicle_id.strip()
@@ -346,10 +353,19 @@ class MqttBridge:
                 self._apply_subscriptions(c)
             except Exception as exc:
                 debug_log.exception("mqtt", "subscribe after connect failed", exc)
-            # Re-claim control after drop (other clients / BLE glitches)
-            threading.Thread(target=self._reassert_all, name="mqtt-reassert", daemon=True).start()
+            # Always start host discovery as soon as MQTT is up (server boot + reconnect).
+            def _boot_discover() -> None:
+                try:
+                    time.sleep(0.15)
+                    self.discover(True)
+                    debug_log.info("mqtt", "boot discover sent on Anki/Hosts/U/I/{callerId}")
+                except Exception as exc:
+                    debug_log.exception("mqtt", "boot discover failed", exc)
+                self._reassert_all()
+
+            threading.Thread(target=_boot_discover, name="mqtt-boot-discover", daemon=True).start()
             if first_connect["done"]:
-                debug_log.info("mqtt", "auto-reconnected — subscriptions + hold restored")
+                debug_log.info("mqtt", "auto-reconnected — discover + hold restored")
             first_connect["done"] = True
             self._emit({"type": "mqttConnected", "broker": f"{self.host}:{self.port}"})
 
