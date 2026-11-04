@@ -235,6 +235,12 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
 }
+.cockpits.single {
+  grid-template-columns: 1fr;
+}
+.cockpit[hidden] {
+  display: none !important;
+}
 .advanced-panel {
   grid-column: 1 / -1;
   animation-delay: 0.14s;

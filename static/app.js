@@ -169,14 +169,23 @@
 
   // ---------------- fleet / slots ----------------
 
+  function syncCockpitLayout() {
+    const root = $("cockpits");
+    const hasB = !!state.slots.B;
+    root.classList.toggle("single", !hasB);
+    cockpitEl("B").hidden = !hasB;
+  }
+
   function assignSlot(slot, vehicleId, { quiet } = {}) {
     if (state.slots.A === vehicleId) state.slots.A = null;
     if (state.slots.B === vehicleId) state.slots.B = null;
     state.slots[slot] = vehicleId;
-    if (slot === "A") state.selectedId = vehicleId;
+    state.selectedId = vehicleId;
     saveSlots();
     renderVehicles();
-    refreshCockpit(slot);
+    refreshCockpit("A");
+    refreshCockpit("B");
+    syncCockpitLayout();
     if (!quiet) toast(`Véhicule → piste ${slot}`);
   }
 
@@ -187,7 +196,9 @@
     state.slots[slot] = null;
     saveSlots();
     renderVehicles();
-    refreshCockpit(slot);
+    refreshCockpit("A");
+    refreshCockpit("B");
+    syncCockpitLayout();
   }
 
   function updateHero() {
@@ -213,17 +224,26 @@
     hero.classList.add("active");
   }
 
-  async function selectVehicleForControl(vehicleId) {
+  function pickSlotForVehicle(vehicleId) {
+    if (state.slots.A === vehicleId) return "A";
+    if (state.slots.B === vehicleId) return "B";
+    if (!state.slots.A) return "A";
+    if (!state.slots.B) return "B";
+    // Deux voitures déjà assignées : un 3e clic remplace la piste A.
+    return "A";
+  }
+
+  async function selectVehicleForControl(vehicleId, preferredSlot) {
+    const slot = preferredSlot || pickSlotForVehicle(vehicleId);
     state.selectedId = vehicleId;
-    assignSlot("A", vehicleId, { quiet: true });
-    renderVehicles();
+    assignSlot(slot, vehicleId, { quiet: true });
     updateHero();
     try {
       await api(`/api/vehicles/${encodeURIComponent(vehicleId)}/connect`, {
         method: "POST",
         body: JSON.stringify({ enable: true }),
       });
-      toast(`Sélectionné · connexion envoyée`);
+      toast(`Piste ${slot} · connecté — commande à droite`);
     } catch (err) {
       toast(err.message);
     }
@@ -257,23 +277,29 @@
       const row = document.createElement("div");
       row.className = `vehicle-item${onA || onB ? " active" : ""}${selected ? " selected-control" : ""}`;
       row.dataset.vehicleId = id;
+      const slotLabel = onA ? " · piste A" : onB ? " · piste B" : "";
       row.innerHTML = `
           <div class="vehicle-thumb" aria-hidden="true"></div>
           <div>
             <strong>${escapeHtml(v.model || "Véhicule")}</strong>
-            <span>${escapeHtml(id)}${selected ? " · sélectionné" : ""}${onB && !onA ? " · piste B" : ""}</span>
+            <span>${escapeHtml(id)}${slotLabel}${v.connected ? "" : " · à connecter"}</span>
           </div>
           <div class="assign-btns">
             <span class="badge ${v.connected ? "on" : ""}">${v.connected ? "connecté" : (v.status || "vu")}</span>
-            <button type="button" class="btn ghost tiny" data-assign="B" title="Aussi sur piste B">+B</button>
+            <button type="button" class="btn ghost tiny" data-assign="A" title="Piste A">A</button>
+            <button type="button" class="btn ghost tiny" data-assign="B" title="Piste B">B</button>
           </div>
         `;
       row.addEventListener("click", () => {
         selectVehicleForControl(id);
       });
+      row.querySelector('[data-assign="A"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        selectVehicleForControl(id, "A");
+      });
       row.querySelector('[data-assign="B"]').addEventListener("click", (e) => {
         e.stopPropagation();
-        assignSlot("B", id);
+        selectVehicleForControl(id, "B");
       });
       list.appendChild(row);
     });
@@ -319,11 +345,16 @@
     const id = state.slots[slot];
     const v = (id && state.vehicles[id]) || null;
     root.querySelector(".cockpit-title").textContent = v ? (v.model || "Véhicule") : "Libre";
-    root.querySelector(".cockpit-id").textContent = id || (slot === "A" ? "Sélectionne un véhicule" : "Bouton +B sur un véhicule");
+    root.querySelector(".cockpit-id").textContent = id
+      ? `${id}${v && v.connected ? " · prêt" : " · connexion…"}`
+      : slot === "A"
+        ? "Clique un véhicule dans le garage"
+        : "2e véhicule → piste B";
     root.classList.toggle("empty-slot", !id);
     root.querySelector(".hold-toggle-input").checked = !!(id && state.hold[id]);
     updateTelemetry(slot);
     if (slot === "A") updateHero();
+    syncCockpitLayout();
   }
 
   function requireSlot(slot) {
@@ -1177,12 +1208,14 @@
     wireCockpit("B");
     renderProfiles();
     updateRaceUI();
+    syncCockpitLayout();
     try {
       applySnapshot(await api("/api/state"));
     } catch {
       refreshCockpit("A");
       refreshCockpit("B");
     }
+    syncCockpitLayout();
     connectWs();
     startStatePoll();
     try {

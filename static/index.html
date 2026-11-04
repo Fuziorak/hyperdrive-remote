@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261104c" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261104d" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -40,7 +40,7 @@
       <div class="hero-copy">
         <p class="hero-kicker">Véhicule sélectionné</p>
         <h2 id="heroTitle">Aucun</h2>
-        <p id="heroMeta">Clique un véhicule dans la liste pour commencer</p>
+        <p id="heroMeta">Garage → sélection → connexion auto → commande sur la piste</p>
       </div>
       <div class="hero-car" aria-hidden="true">
         <div class="car-body"></div>
@@ -55,7 +55,7 @@
     <section class="panel fleet-panel">
       <div class="panel-head">
         <h2>Garage</h2>
-        <p>Véhicules détectés · un clic pour commander</p>
+        <p>1er clic → piste A · 2e voiture → piste B (boutons A/B pour forcer)</p>
       </div>
       <div id="vehicleList" class="vehicle-list">
         <p class="empty">Scan en cours ou aucun véhicule encore…</p>
@@ -313,6 +313,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261104c"></script>
+  <script src="/static/app.js?v=20261104d"></script>
 </body>
 </html>
