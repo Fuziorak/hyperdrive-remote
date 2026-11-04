@@ -12,8 +12,9 @@
   --blue: #4da3ff;
   --shadow: 0 22px 60px rgba(0, 0, 0, 0.5);
   --radius: 20px;
-  --font: "IBM Plex Sans", system-ui, sans-serif;
-  --display: "Bebas Neue", sans-serif;
+  /* System fonts only — lab SSID hyperdrive has no Internet for Google Fonts. */
+  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --display: "Segoe UI Condensed", "Arial Narrow", "Segoe UI", Impact, sans-serif;
 }
 
 * { box-sizing: border-box; }

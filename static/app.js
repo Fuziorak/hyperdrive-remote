@@ -974,6 +974,9 @@
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => {
+      logLine("ok", "WebSocket connecté");
+    };
     ws.onmessage = (ev) => {
       try {
         handleEvent(JSON.parse(ev.data));
@@ -985,6 +988,17 @@
       logLine("err", "WebSocket fermé — reconnexion…");
       setTimeout(connectWs, 1500);
     };
+  }
+
+  /** Backup sync when WS events were missed (e.g. MQTT up before page JS ran). */
+  function startStatePoll() {
+    setInterval(async () => {
+      try {
+        applySnapshot(await api("/api/state"));
+      } catch {
+        /* server down / tab closing */
+      }
+    }, 2500);
   }
 
   // ---------------- global buttons ----------------
@@ -1170,6 +1184,7 @@
       refreshCockpit("B");
     }
     connectWs();
+    startStatePoll();
     try {
       const info = await api("/api/debug/info");
       if (info.logFile) {

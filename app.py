@@ -107,9 +107,10 @@ orch.add_listener(_broadcast)
 
 @app.before_request
 def _log_request() -> None:
-    if request.path.startswith("/static"):
+    # Polling / WS noise — skip. Keep app.js so we see if the UI actually loads offline.
+    if request.path in {"/api/state", "/api/debug/client"}:
         return
-    if request.path == "/api/debug/client":
+    if request.path.startswith("/static") and not request.path.endswith("/app.js"):
         return
     body = None
     if request.method in {"POST", "PUT", "PATCH"}:
@@ -124,7 +125,11 @@ def _log_request() -> None:
 
 @app.after_request
 def _log_response(resp):  # type: ignore[no-untyped-def]
-    if request.path.startswith("/static") or request.path == "/api/debug/client":
+    if request.path in {"/api/state", "/api/debug/client"}:
+        return resp
+    if request.path.startswith("/static"):
+        if request.path.endswith("/app.js"):
+            debug_log.info("http", f"response {request.method} {request.path}", status=resp.status_code)
         return resp
     if request.path.startswith("/api") or request.path == "/":
         debug_log.info(

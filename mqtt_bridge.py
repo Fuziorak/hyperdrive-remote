@@ -63,6 +63,8 @@ class MqttBridge:
         self._want_connected = False
         self._connecting = False
         self._connect_started_at = 0.0
+        self._reconnect_failures = 0
+        self._reconnect_pending = False
         self._start_watchdog()
 
     # ----- public API used by app.py -----
@@ -170,15 +172,45 @@ class MqttBridge:
             self._drop_client_unlocked()
         self._emit({"type": "mqttDisconnected", "reason": "client disconnect"})
 
-    def _schedule_reconnect(self, delay_s: float = 2.0) -> None:
-        """Recreate client after drop (paho auto-reconnect alone was unreliable)."""
+    def _schedule_reconnect(self, delay_s: float | None = None) -> None:
+        """Recreate client after drop — single flight + exponential backoff when TCP is down."""
+        with self._reconnect_lock:
+            if self._reconnect_pending:
+                return
+            self._reconnect_pending = True
+            failures = self._reconnect_failures
+        if delay_s is None:
+            # 2, 4, 8, 16, 30s — stops hammering the broker after Unspecified error.
+            delay_s = min(30.0, 2.0 * (2 ** min(failures, 4)))
 
         def _later() -> None:
-            time.sleep(delay_s)
-            if not self._want_connected or self._connected:
-                return
-            debug_log.info("mqtt", "scheduled reconnect after drop")
-            self.connect_broker(force=True)
+            again = False
+            try:
+                time.sleep(delay_s)
+                if not self._want_connected or self._connected:
+                    return
+                if not self.broker_reachable(timeout_s=1.5):
+                    self._reconnect_failures += 1
+                    debug_log.warn(
+                        "mqtt",
+                        "reconnect deferred — broker TCP down",
+                        failures=self._reconnect_failures,
+                        nextDelayS=min(30.0, 2.0 * (2 ** min(self._reconnect_failures, 4))),
+                    )
+                    again = True
+                    return
+                debug_log.info(
+                    "mqtt",
+                    "scheduled reconnect after drop",
+                    failures=self._reconnect_failures,
+                    delayS=delay_s,
+                )
+                self.connect_broker(force=True)
+            finally:
+                with self._reconnect_lock:
+                    self._reconnect_pending = False
+                if again and self._want_connected and not self._connected:
+                    self._schedule_reconnect()
 
         threading.Thread(target=_later, name="mqtt-reconnect", daemon=True).start()
 
@@ -187,19 +219,16 @@ class MqttBridge:
             return
 
         def _loop() -> None:
-            while not self._watchdog_stop.wait(8.0):
+            while not self._watchdog_stop.wait(10.0):
                 if not self._want_connected or self._connected or self._connecting:
                     continue
+                with self._reconnect_lock:
+                    if self._reconnect_pending or self._connected or self._connecting:
+                        continue
                 if not self.broker_reachable(timeout_s=1.2):
                     continue
-                with self._reconnect_lock:
-                    if self._connected or self._connecting:
-                        continue
-                    debug_log.warn("mqtt", "watchdog: TCP OK, MQTT down — reconnect")
-                    try:
-                        self.connect_broker(force=True)
-                    except Exception as exc:
-                        debug_log.exception("mqtt", "watchdog reconnect failed", exc)
+                debug_log.warn("mqtt", "watchdog: TCP OK, MQTT down — reconnect")
+                self._schedule_reconnect(0.5)
 
         self._watchdog_thread = threading.Thread(target=_loop, name="mqtt-watchdog", daemon=True)
         self._watchdog_thread.start()
@@ -366,15 +395,15 @@ class MqttBridge:
             clientId=client_id,
         )
 
-        # Match MQTT Explorer: mqtt:// host:1883, optional user/pass, no TLS
+        # Match MQTT Explorer: mqtt:// host:1883, optional user/pass, no TLS.
+        # Own reconnect scheduler only — paho auto-reconnect + force drop fought each other.
         client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
             client_id=client_id,
             protocol=mqtt.MQTTv311,
             clean_session=True,
-            reconnect_on_failure=True,
+            reconnect_on_failure=False,
         )
-        client.reconnect_delay_set(min_delay=1, max_delay=20)
         # MQTT Explorer profile has username but NO password field → do not send empty password.
         if self.username:
             pw = self.password if self.password else None
@@ -402,6 +431,7 @@ class MqttBridge:
                 return
             self._connected = True
             self._connecting = False
+            self._reconnect_failures = 0
             connected.set()
             try:
                 self._apply_subscriptions(c)
@@ -427,10 +457,11 @@ class MqttBridge:
             debug_log.warn("mqtt", "on_disconnect", reason=mqtt_rc_str(reason_code))
             self._connected = False
             self._connecting = False
+            self._reconnect_failures += 1
             self._emit({"type": "mqttDisconnected", "reason": mqtt_rc_str(reason_code)})
             # Recreate clean client (same approach as re-running test_mqtt.py)
             if self._want_connected:
-                self._schedule_reconnect(2.0)
+                self._schedule_reconnect()
 
         def on_message(c, userdata, msg):
             try:
@@ -454,30 +485,35 @@ class MqttBridge:
             if not connected.wait(timeout=12):
                 debug_log.error("mqtt", "CONNACK timeout")
                 self._connecting = False
+                self._reconnect_failures += 1
                 self._emit({"type": "mqttError", "message": "CONNACK timeout (12s)"})
                 if self._client is client:
                     self._drop_client_unlocked()
                 if self._want_connected:
-                    self._schedule_reconnect(3.0)
+                    self._schedule_reconnect()
                 return
             if failed_reason:
                 msg = f"MQTT rejected: {failed_reason[0]}"
                 debug_log.error("mqtt", msg)
                 self._connecting = False
+                self._reconnect_failures += 1
                 self._emit({"type": "mqttError", "message": msg})
                 if self._client is client:
                     with self._lock:
                         self._drop_client_unlocked()
+                if self._want_connected:
+                    self._schedule_reconnect()
                 return
         except Exception as exc:
             debug_log.exception("mqtt", "connect_sync failed", exc)
             self._connecting = False
+            self._reconnect_failures += 1
             self._emit({"type": "mqttError", "message": f"connect failed: {exc}"})
             if self._client is client:
                 with self._lock:
                     self._drop_client_unlocked()
             if self._want_connected:
-                self._schedule_reconnect(3.0)
+                self._schedule_reconnect()
 
     def _drop_client_unlocked(self) -> None:
         client = self._client
