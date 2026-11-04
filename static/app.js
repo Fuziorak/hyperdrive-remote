@@ -100,15 +100,28 @@
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(path, {
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-      ...options,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.error || res.statusText || "Erreur");
+    const ctrl = new AbortController();
+    const { timeoutMs = 5000, headers, ...fetchOpts } = options;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(path, {
+        headers: { "Content-Type": "application/json", ...(headers || {}) },
+        ...fetchOpts,
+        signal: ctrl.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || res.statusText || "Erreur");
+      }
+      return data;
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        throw new Error(`Timeout API ${path}`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return data;
   }
 
   function dbg(level, message, data = {}) {
@@ -438,7 +451,7 @@
   const MANUAL_DEFAULTS = { velocity: 700, lane: 0, acceleration: 1400 };
   const MANUAL_SPEED_STEP = 40;
   const MANUAL_LANE_STEP = 8;
-  const MANUAL_HOLD_MS = 110;
+  const MANUAL_HOLD_MS = 200;
   const heldKeys = new Set();
   const holdTimers = {};
   const holdBusy = {};
@@ -1380,6 +1393,9 @@
   async function boot() {
     loadSlots();
     if (state.slots.A) state.selectedId = state.slots.A;
+    // WS + poll first so idle-shutdown / MQTT stay alive even if /api/state stalls.
+    connectWs();
+    startStatePoll();
     try {
       state.meta = await api("/api/meta");
     } catch {
@@ -1391,14 +1407,12 @@
     updateRaceUI();
     syncCockpitLayout();
     try {
-      applySnapshot(await api("/api/state"));
+      applySnapshot(await api("/api/state", { timeoutMs: 4000 }));
     } catch {
       refreshCockpit("A");
       refreshCockpit("B");
     }
     syncCockpitLayout();
-    connectWs();
-    startStatePoll();
     try {
       const info = await api("/api/debug/info");
       if (info.logFile) {

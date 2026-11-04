@@ -155,11 +155,15 @@ class MqttBridge:
             if self._client is not None and self._connecting and age < 20 and force:
                 debug_log.info("mqtt", "force ignored — handshake still young", ageS=round(age, 1))
                 return {"ok": True, "in_progress": True}
+            to_drop = None
             if self._client is not None:
                 debug_log.warn("mqtt", "dropping MQTT client before new connect")
-                self._drop_client_unlocked()
+                to_drop = self._detach_client_unlocked()
             self._connecting = True
             self._connect_started_at = time.time()
+
+        # Never loop_stop/disconnect under _lock — that blocked /api/state & UI boot.
+        self._close_client(to_drop)
 
         threading.Thread(
             target=self._connect_sync,
@@ -171,7 +175,8 @@ class MqttBridge:
     def disconnect_broker(self) -> None:
         self._want_connected = False
         with self._lock:
-            self._drop_client_unlocked()
+            to_drop = self._detach_client_unlocked()
+        self._close_client(to_drop)
         self._emit({"type": "mqttDisconnected", "reason": "client disconnect"})
 
     def _schedule_reconnect(self, delay_s: float | None = None) -> None:
@@ -514,7 +519,9 @@ class MqttBridge:
                 self._reconnect_failures += 1
                 self._emit({"type": "mqttError", "message": "CONNACK timeout (12s)"})
                 if self._client is client:
-                    self._drop_client_unlocked()
+                    with self._lock:
+                        to_drop = self._detach_client_unlocked()
+                    self._close_client(to_drop)
                 if self._want_connected:
                     self._schedule_reconnect()
                 return
@@ -526,7 +533,8 @@ class MqttBridge:
                 self._emit({"type": "mqttError", "message": msg})
                 if self._client is client:
                     with self._lock:
-                        self._drop_client_unlocked()
+                        to_drop = self._detach_client_unlocked()
+                    self._close_client(to_drop)
                 if self._want_connected:
                     self._schedule_reconnect()
                 return
@@ -537,15 +545,20 @@ class MqttBridge:
             self._emit({"type": "mqttError", "message": f"connect failed: {exc}"})
             if self._client is client:
                 with self._lock:
-                    self._drop_client_unlocked()
+                    to_drop = self._detach_client_unlocked()
+                self._close_client(to_drop)
             if self._want_connected:
                 self._schedule_reconnect()
 
-    def _drop_client_unlocked(self) -> None:
+    def _detach_client_unlocked(self) -> Any:
+        """Clear client refs under lock; caller must _close_client outside the lock."""
         client = self._client
         self._client = None
         self._connected = False
         self._connecting = False
+        return client
+
+    def _close_client(self, client: Any) -> None:
         if client is None:
             return
         try:

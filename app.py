@@ -28,9 +28,8 @@ _ws_clients: list[Any] = []
 _ws_lock = threading.Lock()
 _had_ui_client = False
 _idle_shutdown_token = 0
-# Grace so a page refresh does not kill the server mid-reload.
-# Longer grace: Wi‑Fi roam / tab refresh must not kill MQTT mid-handshake.
-_IDLE_SHUTDOWN_S = 12.0
+# Grace after last UI activity. Too short killed MQTT while the user still raced.
+_IDLE_SHUTDOWN_S = 90.0
 
 
 def _shutdown_process(reason: str) -> None:
@@ -85,7 +84,10 @@ def _broadcast(event: dict[str, Any]) -> None:
     }:
         debug_log.info("event", f"broadcast {et}", event=event)
     elif et == "mqttOut":
-        debug_log.info("event", "mqtt out", topic=event.get("topic"), payload=event.get("payload"))
+        # Hold refreshes speed ~3×/s — don't flood debug.log (was drowning real faults).
+        payload = event.get("payload") or {}
+        if payload.get("type") != "speed":
+            debug_log.info("event", "mqtt out", topic=event.get("topic"), payload=payload)
     raw = json.dumps(event, default=str)
     dead: list[Any] = []
     with _ws_lock:
@@ -107,6 +109,9 @@ orch.add_listener(_broadcast)
 
 @app.before_request
 def _log_request() -> None:
+    # Keep server alive while the tab polls, even if WebSocket dropped.
+    if request.path.startswith("/api") or request.path in {"/", "/ws"}:
+        _cancel_idle_shutdown()
     # Polling / WS noise — skip. Keep app.js so we see if the UI actually loads offline.
     if request.path in {"/api/state", "/api/debug/client"}:
         return
