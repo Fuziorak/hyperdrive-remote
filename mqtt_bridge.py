@@ -58,6 +58,9 @@ class MqttBridge:
         self._base_topics: list[str] = []
         self._reconnect_lock = threading.Lock()
         self._announced: set[str] = set()
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
+        self._start_watchdog()
 
     # ----- public API used by app.py -----
 
@@ -151,6 +154,25 @@ class MqttBridge:
         with self._lock:
             self._drop_client_unlocked()
         self._emit({"type": "mqttDisconnected", "reason": "client disconnect"})
+
+    def _start_watchdog(self) -> None:
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            return
+
+        def _loop() -> None:
+            while not self._watchdog_stop.wait(4.0):
+                if self._connected:
+                    continue
+                if not self.broker_reachable(timeout_s=1.0):
+                    continue
+                debug_log.warn("mqtt", "watchdog: broker reachable but MQTT down — reconnecting")
+                try:
+                    self.connect_broker(force=True)
+                except Exception as exc:
+                    debug_log.exception("mqtt", "watchdog reconnect failed", exc)
+
+        self._watchdog_thread = threading.Thread(target=_loop, name="mqtt-watchdog", daemon=True)
+        self._watchdog_thread.start()
 
     def discover(self, enable: bool = True) -> None:
         """Publish HostIntent discover on Anki/Hosts/U/I/{callerID} (lab network scan)."""
@@ -390,7 +412,7 @@ class MqttBridge:
             self._client = client
 
         try:
-            client.connect(self.host, self.port, keepalive=30)
+            client.connect(self.host, self.port, keepalive=60)
             client.loop_start()
             if not connected.wait(timeout=12):
                 debug_log.error("mqtt", "CONNACK timeout")
@@ -437,8 +459,12 @@ class MqttBridge:
         client = self._client
         if not client or not self._connected:
             return
+        # Avoid Anki/Vehicles/U/+/S/# global flood (battery Hz) — selective topics only.
         patterns = [
-            f"Anki/Vehicles/U/{vehicle_id}/S/#",
+            f"Anki/Vehicles/U/{vehicle_id}/S/online",
+            f"Anki/Vehicles/U/{vehicle_id}/S/status",
+            f"Anki/Vehicles/U/{vehicle_id}/S/onTrack",
+            f"Anki/Vehicles/U/{vehicle_id}/S/battery/level",
             f"Anki/Vehicles/U/{vehicle_id}/E/#",
         ]
         for t in patterns:
@@ -472,13 +498,15 @@ class MqttBridge:
                 pass
 
     def _base_subscribe_topics(self) -> list[str]:
+        # Narrow filters: full Vehicles/+/S/# caused MQTT drops (Unspecified error)
+        # while short test_mqtt (3s) still succeeded.
         return [
-            f"Anki/Hosts/U/{self.host_id}/S/#",
-            f"Anki/Hosts/U/{self.host_id}/E/#",
             "Anki/Hosts/U/+/E/#",
-            "Anki/Hosts/U/+/S/#",
-            "Anki/Vehicles/U/+/S/#",
-            "Anki/Vehicles/U/+/E/#",
+            "Anki/Hosts/U/+/S/online",
+            "Anki/Hosts/U/+/S/discover",
+            "Anki/Hosts/U/+/E/vehicle/discovered/+",
+            "Anki/Vehicles/U/+/S/online",
+            "Anki/Vehicles/U/+/S/status",
         ]
 
     def _apply_subscriptions(self, client: mqtt.Client) -> None:

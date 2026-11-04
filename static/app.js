@@ -886,6 +886,12 @@
         $("mqttPill").dataset.state = "off";
         $("mqttLabel").textContent = "MQTT déconnecté";
         logLine("err", `MQTT déconnecté (${msg.reason || "?"})`);
+        // Auto-retry shortly (watchdog côté serveur aussi)
+        setTimeout(() => {
+          if (!state.mqttConnected) {
+            connectBrokerRequest({ quiet: true, force: true }).catch(() => {});
+          }
+        }, 2000);
         break;
       case "mqttError":
         $("mqttPill").dataset.state = "err";
