@@ -229,6 +229,27 @@ body {
 .fleet-panel { animation-delay: 0.05s; }
 .race-panel { animation-delay: 0.08s; }
 .profiles-panel { animation-delay: 0.1s; }
+.manual-drive-hint {
+  grid-column: 1 / -1;
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.manual-drive-hint kbd {
+  display: inline-block;
+  padding: 0.08rem 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-soft);
+  color: var(--amber);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+}
+#btnManualDrive[aria-pressed="true"] {
+  outline: 2px solid var(--cyan);
+  color: var(--cyan);
+}
+
 .cockpits {
   grid-column: 1 / -1;
   display: grid;

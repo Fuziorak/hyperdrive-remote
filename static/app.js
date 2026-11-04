@@ -59,6 +59,9 @@
     selectedId: null,
     autoBootDone: false,
     autoScanned: false,
+    /** Conduite clavier WASD sur la piste active. */
+    manualDrive: false,
+    manualSlot: "A",
     race: {
       running: false,
       startTs: 0,
@@ -429,6 +432,122 @@
     });
     toast(`Piste ${slot}: lane`);
   }
+
+  // ---------------- manual WASD drive ----------------
+
+  const MANUAL_DEFAULTS = { velocity: 400, lane: 0, acceleration: 1000 };
+  const MANUAL_SPEED_STEP = 50;
+  const MANUAL_LANE_STEP = 17;
+
+  function activeManualSlot() {
+    if (state.manualSlot === "B" && state.slots.B) return "B";
+    if (state.slots.A) return "A";
+    if (state.slots.B) return "B";
+    return null;
+  }
+
+  function setManualDrive(on) {
+    state.manualDrive = !!on;
+    const btn = $("btnManualDrive");
+    const hint = $("manualDriveHint");
+    if (btn) btn.setAttribute("aria-pressed", state.manualDrive ? "true" : "false");
+    if (btn) btn.textContent = state.manualDrive ? "Clavier ON" : "Clavier WASD";
+    if (hint) hint.hidden = !state.manualDrive;
+    if (state.manualDrive) {
+      state.manualSlot = state.slots.A ? "A" : state.slots.B ? "B" : "A";
+      toast(`WASD → piste ${state.manualSlot}`);
+    } else {
+      toast("Clavier OFF");
+    }
+  }
+
+  function clamp(n, lo, hi) {
+    return Math.max(lo, Math.min(hi, n));
+  }
+
+  async function manualAdjustSpeed(delta) {
+    const slot = activeManualSlot();
+    if (!slot) {
+      toast("Assigne un véhicule d’abord");
+      return;
+    }
+    const root = cockpitEl(slot);
+    const slider = root.querySelector(".speed-slider");
+    const next = clamp(Number(slider.value) + delta, Number(slider.min), Number(slider.max));
+    slider.value = String(next);
+    root.querySelector(".speed-value").textContent = String(next);
+    await sendSpeed(slot, { quiet: true });
+    logLine("ok", `WASD vitesse ${next} (piste ${slot})`);
+  }
+
+  async function manualAdjustLane(delta) {
+    const slot = activeManualSlot();
+    if (!slot) {
+      toast("Assigne un véhicule d’abord");
+      return;
+    }
+    const root = cockpitEl(slot);
+    const slider = root.querySelector(".lane-slider");
+    const next = clamp(Number(slider.value) + delta, Number(slider.min), Number(slider.max));
+    slider.value = String(next);
+    root.querySelector(".lane-value").textContent = String(next);
+    await sendLane(slot);
+    logLine("ok", `WASD voie offset ${next} (piste ${slot})`);
+  }
+
+  async function manualResetDefaults() {
+    const slot = activeManualSlot();
+    if (!slot) {
+      toast("Assigne un véhicule d’abord");
+      return;
+    }
+    const root = cockpitEl(slot);
+    root.querySelector(".speed-slider").value = String(MANUAL_DEFAULTS.velocity);
+    root.querySelector(".speed-value").textContent = String(MANUAL_DEFAULTS.velocity);
+    root.querySelector(".accel-input").value = String(MANUAL_DEFAULTS.acceleration);
+    root.querySelector(".lane-slider").value = String(MANUAL_DEFAULTS.lane);
+    root.querySelector(".lane-value").textContent = String(MANUAL_DEFAULTS.lane);
+    await sendSpeed(slot, { quiet: true });
+    await sendLane(slot);
+    toast(`Défauts piste ${slot}: ${MANUAL_DEFAULTS.velocity} mm/s · offset 0`);
+    logLine("ok", `WASD reset défauts piste ${slot}`);
+  }
+
+  function isTypingTarget(el) {
+    if (!el) return false;
+    const tag = (el.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+  }
+
+  document.addEventListener("keydown", (ev) => {
+    if (!state.manualDrive) return;
+    if (isTypingTarget(ev.target)) return;
+    const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
+    if (key === "1") {
+      state.manualSlot = "A";
+      toast("Clavier → piste A");
+      return;
+    }
+    if (key === "2") {
+      state.manualSlot = "B";
+      toast("Clavier → piste B");
+      return;
+    }
+    const map = {
+      w: () => manualAdjustSpeed(MANUAL_SPEED_STEP),
+      s: () => manualAdjustSpeed(-MANUAL_SPEED_STEP),
+      a: () => manualAdjustLane(-MANUAL_LANE_STEP),
+      d: () => manualAdjustLane(MANUAL_LANE_STEP),
+      " ": () => manualResetDefaults(),
+      Spacebar: () => manualResetDefaults(),
+    };
+    const fn = map[key] || (ev.code === "Space" ? map[" "] : null);
+    if (!fn) return;
+    ev.preventDefault();
+    fn().catch((err) => {
+      if (err.message !== "no vehicle") toast(err.message);
+    });
+  });
 
   async function sendLightsPreset(slot, preset) {
     const id = requireSlot(slot);
@@ -1194,6 +1313,10 @@
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);
     }
+  });
+
+  $("btnManualDrive").addEventListener("click", () => {
+    setManualDrive(!state.manualDrive);
   });
 
   async function boot() {
