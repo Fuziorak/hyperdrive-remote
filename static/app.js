@@ -419,7 +419,7 @@
     if (!quiet) toast(`Piste ${slot}: vitesse ${velocity}`);
   }
 
-  async function sendLane(slot) {
+  async function sendLane(slot, { quiet } = {}) {
     const id = requireSlot(slot);
     const root = cockpitEl(slot);
     await api(`/api/vehicles/${encodeURIComponent(id)}/lane`, {
@@ -430,14 +430,18 @@
         acceleration: 800,
       }),
     });
-    toast(`Piste ${slot}: lane`);
+    if (!quiet) toast(`Piste ${slot}: lane`);
   }
 
   // ---------------- manual WASD drive ----------------
 
   const MANUAL_DEFAULTS = { velocity: 400, lane: 0, acceleration: 1000 };
-  const MANUAL_SPEED_STEP = 50;
-  const MANUAL_LANE_STEP = 17;
+  const MANUAL_SPEED_STEP = 40;
+  const MANUAL_LANE_STEP = 8;
+  const MANUAL_HOLD_MS = 110;
+  const heldKeys = new Set();
+  const holdTimers = {};
+  const holdBusy = {};
 
   function activeManualSlot() {
     if (state.manualSlot === "B" && state.slots.B) return "B";
@@ -446,8 +450,41 @@
     return null;
   }
 
+  function stopHold(code) {
+    heldKeys.delete(code);
+    if (holdTimers[code]) {
+      clearInterval(holdTimers[code]);
+      delete holdTimers[code];
+    }
+    delete holdBusy[code];
+  }
+
+  function stopAllHolds() {
+    [...heldKeys].forEach(stopHold);
+  }
+
+  function startHold(code, action) {
+    if (heldKeys.has(code)) return;
+    heldKeys.add(code);
+    const tick = () => {
+      if (holdBusy[code]) return;
+      holdBusy[code] = true;
+      Promise.resolve()
+        .then(action)
+        .catch((err) => {
+          if (err && err.message !== "no vehicle") toast(err.message);
+        })
+        .finally(() => {
+          holdBusy[code] = false;
+        });
+    };
+    tick();
+    holdTimers[code] = setInterval(tick, MANUAL_HOLD_MS);
+  }
+
   function setManualDrive(on) {
     state.manualDrive = !!on;
+    if (!state.manualDrive) stopAllHolds();
     const btn = $("btnManualDrive");
     const hint = $("manualDriveHint");
     if (btn) btn.setAttribute("aria-pressed", state.manualDrive ? "true" : "false");
@@ -455,7 +492,7 @@
     if (hint) hint.hidden = !state.manualDrive;
     if (state.manualDrive) {
       state.manualSlot = state.slots.A ? "A" : state.slots.B ? "B" : "A";
-      toast(`WASD → piste ${state.manualSlot}`);
+      toast(`WASD maintenu → piste ${state.manualSlot}`);
     } else {
       toast("Clavier OFF");
     }
@@ -469,6 +506,7 @@
     const slot = activeManualSlot();
     if (!slot) {
       toast("Assigne un véhicule d’abord");
+      stopAllHolds();
       return;
     }
     const root = cockpitEl(slot);
@@ -477,13 +515,13 @@
     slider.value = String(next);
     root.querySelector(".speed-value").textContent = String(next);
     await sendSpeed(slot, { quiet: true });
-    logLine("ok", `WASD vitesse ${next} (piste ${slot})`);
   }
 
   async function manualAdjustLane(delta) {
     const slot = activeManualSlot();
     if (!slot) {
       toast("Assigne un véhicule d’abord");
+      stopAllHolds();
       return;
     }
     const root = cockpitEl(slot);
@@ -491,8 +529,7 @@
     const next = clamp(Number(slider.value) + delta, Number(slider.min), Number(slider.max));
     slider.value = String(next);
     root.querySelector(".lane-value").textContent = String(next);
-    await sendLane(slot);
-    logLine("ok", `WASD voie offset ${next} (piste ${slot})`);
+    await sendLane(slot, { quiet: true });
   }
 
   async function manualResetDefaults() {
@@ -508,9 +545,8 @@
     root.querySelector(".lane-slider").value = String(MANUAL_DEFAULTS.lane);
     root.querySelector(".lane-value").textContent = String(MANUAL_DEFAULTS.lane);
     await sendSpeed(slot, { quiet: true });
-    await sendLane(slot);
+    await sendLane(slot, { quiet: true });
     toast(`Défauts piste ${slot}: ${MANUAL_DEFAULTS.velocity} mm/s · offset 0`);
-    logLine("ok", `WASD reset défauts piste ${slot}`);
   }
 
   function isTypingTarget(el) {
@@ -519,34 +555,56 @@
     return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
   }
 
+  function manualKeyCode(ev) {
+    if (ev.code === "Space") return "space";
+    const k = ev.key.length === 1 ? ev.key.toLowerCase() : "";
+    if (k === "w" || k === "a" || k === "s" || k === "d" || k === "1" || k === "2") return k;
+    return null;
+  }
+
   document.addEventListener("keydown", (ev) => {
     if (!state.manualDrive) return;
     if (isTypingTarget(ev.target)) return;
-    const key = ev.key.length === 1 ? ev.key.toLowerCase() : ev.key;
-    if (key === "1") {
+    const code = manualKeyCode(ev);
+    if (!code) return;
+    ev.preventDefault();
+    if (code === "1") {
       state.manualSlot = "A";
       toast("Clavier → piste A");
       return;
     }
-    if (key === "2") {
+    if (code === "2") {
       state.manualSlot = "B";
       toast("Clavier → piste B");
       return;
     }
-    const map = {
+    if (code === "space") {
+      if (ev.repeat) return;
+      manualResetDefaults().catch((err) => {
+        if (err.message !== "no vehicle") toast(err.message);
+      });
+      return;
+    }
+    if (ev.repeat) return; // our interval handles hold, ignore OS key-repeat
+    const holdActions = {
       w: () => manualAdjustSpeed(MANUAL_SPEED_STEP),
       s: () => manualAdjustSpeed(-MANUAL_SPEED_STEP),
       a: () => manualAdjustLane(-MANUAL_LANE_STEP),
       d: () => manualAdjustLane(MANUAL_LANE_STEP),
-      " ": () => manualResetDefaults(),
-      Spacebar: () => manualResetDefaults(),
     };
-    const fn = map[key] || (ev.code === "Space" ? map[" "] : null);
-    if (!fn) return;
-    ev.preventDefault();
-    fn().catch((err) => {
-      if (err.message !== "no vehicle") toast(err.message);
-    });
+    startHold(code, holdActions[code]);
+  });
+
+  document.addEventListener("keyup", (ev) => {
+    if (!state.manualDrive) return;
+    const code = manualKeyCode(ev);
+    if (!code || code === "space" || code === "1" || code === "2") return;
+    stopHold(code);
+  });
+
+  window.addEventListener("blur", stopAllHolds);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopAllHolds();
   });
 
   async function sendLightsPreset(slot, preset) {
