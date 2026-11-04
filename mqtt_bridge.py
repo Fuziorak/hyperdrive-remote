@@ -160,16 +160,23 @@ class MqttBridge:
             return
 
         def _loop() -> None:
-            while not self._watchdog_stop.wait(4.0):
+            while not self._watchdog_stop.wait(5.0):
                 if self._connected:
                     continue
-                if not self.broker_reachable(timeout_s=1.0):
+                # Only retry when lab Wi‑Fi actually reaches the broker.
+                if not self.broker_reachable(timeout_s=1.2):
                     continue
-                debug_log.warn("mqtt", "watchdog: broker reachable but MQTT down — reconnecting")
-                try:
-                    self.connect_broker(force=True)
-                except Exception as exc:
-                    debug_log.exception("mqtt", "watchdog reconnect failed", exc)
+                with self._reconnect_lock:
+                    if self._connected:
+                        continue
+                    debug_log.warn(
+                        "mqtt",
+                        "watchdog: TCP OK but MQTT down — reconnecting",
+                    )
+                    try:
+                        self.connect_broker(force=True)
+                    except Exception as exc:
+                        debug_log.exception("mqtt", "watchdog reconnect failed", exc)
 
         self._watchdog_thread = threading.Thread(target=_loop, name="mqtt-watchdog", daemon=True)
         self._watchdog_thread.start()

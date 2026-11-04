@@ -820,7 +820,7 @@
       body: JSON.stringify({
         brokerHost: $("brokerHost").value.trim() || "10.42.0.1",
         brokerPort: Number($("brokerPort").value) || 1883,
-        hostId: $("hostId").value.trim() || "1",
+        hostId: $("hostId").value.trim() || "hyperdrive",
         mqttUsername: $("mqttUsername").value.trim(),
         mqttPassword: $("mqttPassword").value,
         force,
@@ -828,7 +828,10 @@
     });
     applySnapshot(data.state);
     if (!quiet && data.brokerReachable === false) {
-      logLine("err", "TCP vers 10.42.0.1:1883 échoue — vérifie le Wi‑Fi hyperdrive");
+      $("mqttPill").dataset.state = "err";
+      $("mqttLabel").textContent = "Hors Wi‑Fi hyperdrive";
+      logLine("err", "TCP 10.42.0.1:1883 inaccessible — reconnecte le Wi‑Fi SSID hyperdrive");
+      toast("Pas sur le Wi‑Fi hyperdrive");
     }
     return data;
   }
@@ -839,7 +842,20 @@
     toast("Connexion au lab…");
     dbg("INFO", "autoBoot start");
 
-    // One connect request, then wait longer — do not force-kill the handshake.
+    // Probe TCP first so the UI explains Wi‑Fi issues clearly.
+    try {
+      const ping = await api("/api/broker/ping");
+      if (ping.reachable === false) {
+        $("mqttPill").dataset.state = "err";
+        $("mqttLabel").textContent = "Hors Wi‑Fi hyperdrive";
+        toast("Wi‑Fi hyperdrive requis");
+        logLine("err", "Broker 10.42.0.1 injoignable — IP actuelle hors réseau lab");
+        dbg("ERROR", "autoBoot: broker TCP unreachable");
+      }
+    } catch {
+      /* ignore */
+    }
+
     try {
       await connectBrokerRequest({ quiet: false });
     } catch (err) {
@@ -860,7 +876,7 @@
     dbg("ERROR", "autoBoot failed after wait");
     logLine(
       "err",
-      "Toujours hors broker. Sur hyperdrive? Puis ouvre Réglages réseau → Reconnecter MQTT"
+      "Toujours hors broker. Vérifie SSID hyperdrive (IP 10.42.0.x) puis Reconnecter MQTT"
     );
   }
 
