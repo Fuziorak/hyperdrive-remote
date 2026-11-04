@@ -282,6 +282,13 @@ class MqttBridge:
             "type": "speed",
             "payload": {"velocity": int(velocity), "acceleration": int(acceleration)},
         })
+        # Anki/Hyperdrive drops speed after a few seconds unless reasserted.
+        # Auto-hold keeps the car moving; velocity 0 / panic turns hold off.
+        if int(velocity) > 0:
+            if not self._hold_enabled.get(vehicle_id):
+                self.set_hold(vehicle_id, True, interval_s=1.0)
+        elif self._hold_enabled.get(vehicle_id):
+            self.set_hold(vehicle_id, False)
 
     def set_lane(
         self,
