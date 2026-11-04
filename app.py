@@ -7,7 +7,6 @@ Open http://127.0.0.1:5050 after joining Wi-Fi SSID `hyperdrive`.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from typing import Any
