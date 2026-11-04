@@ -1192,4 +1192,11 @@
       }
       dbg("INFO", "UI booted", { logFile: info.logFile });
     } catch {
-      
+      /* ignore */
+    }
+    await autoBoot();
+  }
+
+  boot();
+})();
+ 
