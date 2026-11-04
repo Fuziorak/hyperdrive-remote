@@ -50,6 +50,8 @@
 
   const state = {
     vehicles: {},
+    /** Ordre fixe d'apparition dans le garage (ne pas trier par lastSeen). */
+    garageOrder: [],
     meta: null,
     mqttConnected: false,
     hold: {},
@@ -227,25 +229,35 @@
     }
   }
 
+  function rememberGarageOrder(id) {
+    if (!id || state.garageOrder.includes(id)) return;
+    state.garageOrder.push(id);
+  }
+
+  function orderedVehicleIds() {
+    // Keep first-seen order; append any missing ids (e.g. from snapshot) stably by id.
+    Object.keys(state.vehicles).forEach(rememberGarageOrder);
+    return state.garageOrder.filter((id) => state.vehicles[id]);
+  }
+
   function renderVehicles() {
     const list = $("vehicleList");
-    const ids = Object.keys(state.vehicles);
+    const ids = orderedVehicleIds();
     if (!ids.length) {
       list.innerHTML = `<p class="empty">Aucun véhicule détecté pour l’instant…</p>`;
       updateHero();
       return;
     }
     list.innerHTML = "";
-    ids
-      .sort((a, b) => (state.vehicles[b].lastSeen || 0) - (state.vehicles[a].lastSeen || 0))
-      .forEach((id) => {
-        const v = state.vehicles[id];
-        const onA = state.slots.A === id;
-        const onB = state.slots.B === id;
-        const selected = state.selectedId === id || onA;
-        const row = document.createElement("div");
-        row.className = `vehicle-item${onA || onB ? " active" : ""}${selected ? " selected-control" : ""}`;
-        row.innerHTML = `
+    ids.forEach((id) => {
+      const v = state.vehicles[id];
+      const onA = state.slots.A === id;
+      const onB = state.slots.B === id;
+      const selected = state.selectedId === id || onA;
+      const row = document.createElement("div");
+      row.className = `vehicle-item${onA || onB ? " active" : ""}${selected ? " selected-control" : ""}`;
+      row.dataset.vehicleId = id;
+      row.innerHTML = `
           <div class="vehicle-thumb" aria-hidden="true"></div>
           <div>
             <strong>${escapeHtml(v.model || "Véhicule")}</strong>
@@ -256,16 +268,39 @@
             <button type="button" class="btn ghost tiny" data-assign="B" title="Aussi sur piste B">+B</button>
           </div>
         `;
-        row.addEventListener("click", () => {
-          selectVehicleForControl(id);
-        });
-        row.querySelector('[data-assign="B"]').addEventListener("click", (e) => {
-          e.stopPropagation();
-          assignSlot("B", id);
-        });
-        list.appendChild(row);
+      row.addEventListener("click", () => {
+        selectVehicleForControl(id);
       });
+      row.querySelector('[data-assign="B"]').addEventListener("click", (e) => {
+        e.stopPropagation();
+        assignSlot("B", id);
+      });
+      list.appendChild(row);
+    });
     updateHero();
+  }
+
+  /** Update badge/classes in place — never reshuffle garage on telemetry. */
+  function patchVehicleRow(id) {
+    const row = document.querySelector(`#vehicleList .vehicle-item[data-vehicle-id="${CSS.escape(id)}"]`);
+    if (!row) {
+      renderVehicles();
+      return;
+    }
+    const v = state.vehicles[id] || {};
+    const onA = state.slots.A === id;
+    const onB = state.slots.B === id;
+    const selected = state.selectedId === id || onA;
+    row.className = `vehicle-item${onA || onB ? " active" : ""}${selected ? " selected-control" : ""}`;
+    const badge = row.querySelector(".badge");
+    if (badge) {
+      badge.className = `badge ${v.connected ? "on" : ""}`;
+      badge.textContent = v.connected ? "connecté" : (v.status || "vu");
+    }
+    const span = row.querySelector("div > span");
+    if (span) {
+      span.textContent = `${id}${selected ? " · sélectionné" : ""}${onB && !onA ? " · piste B" : ""}`;
+    }
   }
 
   function updateTelemetry(slot) {
@@ -739,6 +774,7 @@
     if (!snap) return;
     state.mqttConnected = !!snap.mqttConnected;
     state.vehicles = snap.vehicles || {};
+    Object.keys(state.vehicles).forEach(rememberGarageOrder);
     state.hold = snap.hold || {};
     $("mqttPill").dataset.state = state.mqttConnected ? "on" : "off";
     $("mqttLabel").textContent = state.mqttConnected
@@ -861,6 +897,7 @@
         break;
       case "vehicleDiscovered": {
         const id = msg.vehicleId;
+        const isNew = !state.vehicles[id];
         state.vehicles[id] = {
           ...(state.vehicles[id] || {}),
           id,
@@ -868,19 +905,26 @@
           rssi: msg.rssi ?? state.vehicles[id]?.rssi,
           lastSeen: Date.now() / 1000,
         };
-        renderVehicles();
-        logLine("in", `Véhicule découvert: ${id} (${msg.model || "?"})`);
-        // Pas d'auto-assign : l'utilisateur clique pour sélectionner
+        rememberGarageOrder(id);
+        if (isNew) {
+          renderVehicles();
+          logLine("in", `Véhicule découvert: ${id} (${msg.model || "?"})`);
+        } else {
+          patchVehicleRow(id);
+        }
         break;
       }
       case "vehicleUpdate": {
         const id = msg.vehicleId;
+        const isNew = !state.vehicles[id];
         state.vehicles[id] = {
           ...(state.vehicles[id] || { id }),
           ...msg.state,
           lastSeen: Date.now() / 1000,
         };
-        renderVehicles();
+        rememberGarageOrder(id);
+        if (isNew) renderVehicles();
+        else patchVehicleRow(id);
         if (state.slots.A === id) updateTelemetry("A");
         if (state.slots.B === id) updateTelemetry("B");
         if (state.selectedId === id || state.slots.A === id) updateHero();
@@ -1116,10 +1160,4 @@
       }
       dbg("INFO", "UI booted", { logFile: info.logFile });
     } catch {
-      /* ignore */
-    }
-    await autoBoot();
-  }
-
-  boot();
-})();
+      
