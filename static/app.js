@@ -900,14 +900,9 @@
       case "mqttDisconnected":
         state.mqttConnected = false;
         $("mqttPill").dataset.state = "off";
-        $("mqttLabel").textContent = "MQTT déconnecté";
-        logLine("err", `MQTT déconnecté (${msg.reason || "?"})`);
-        // Auto-retry shortly (watchdog côté serveur aussi)
-        setTimeout(() => {
-          if (!state.mqttConnected) {
-            connectBrokerRequest({ quiet: true, force: true }).catch(() => {});
-          }
-        }, 2000);
+        $("mqttLabel").textContent = "MQTT déconnecté · reconnexion…";
+        logLine("err", `MQTT déconnecté (${msg.reason || "?"}) — reconnexion auto serveur`);
+        // Ne pas force-reconnect côté UI : ça tuait le handshake (hier = test_mqtt OK).
         break;
       case "mqttError":
         $("mqttPill").dataset.state = "err";

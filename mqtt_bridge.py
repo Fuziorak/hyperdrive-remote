@@ -60,6 +60,9 @@ class MqttBridge:
         self._announced: set[str] = set()
         self._watchdog_stop = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
+        self._want_connected = False
+        self._connecting = False
+        self._connect_started_at = 0.0
         self._start_watchdog()
 
     # ----- public API used by app.py -----
@@ -133,15 +136,26 @@ class MqttBridge:
 
     def connect_broker(self, force: bool = False) -> dict[str, Any]:
         """
-        Synchronous-style connect in a worker:
-        returns immediately to caller; result is pushed via events + _connected flag.
+        Same auth/path as test_mqtt.py (validated yesterday on lab Wi‑Fi).
+        Avoid killing an in-flight handshake — that caused phantom 'disconnected' UI.
         """
+        self._want_connected = True
         with self._lock:
             if self._connected and not force:
                 debug_log.info("mqtt", "already connected")
                 return {"ok": True, "already": True}
+            age = time.time() - self._connect_started_at if self._connect_started_at else 999
+            if self._connecting and age < 20 and not force:
+                debug_log.info("mqtt", "connect already in progress", ageS=round(age, 1))
+                return {"ok": True, "in_progress": True}
+            if self._client is not None and self._connecting and age < 20 and force:
+                debug_log.info("mqtt", "force ignored — handshake still young", ageS=round(age, 1))
+                return {"ok": True, "in_progress": True}
             if self._client is not None:
+                debug_log.warn("mqtt", "dropping MQTT client before new connect")
                 self._drop_client_unlocked()
+            self._connecting = True
+            self._connect_started_at = time.time()
 
         threading.Thread(
             target=self._connect_sync,
@@ -151,28 +165,37 @@ class MqttBridge:
         return {"ok": True, "started": True}
 
     def disconnect_broker(self) -> None:
+        self._want_connected = False
         with self._lock:
             self._drop_client_unlocked()
         self._emit({"type": "mqttDisconnected", "reason": "client disconnect"})
+
+    def _schedule_reconnect(self, delay_s: float = 2.0) -> None:
+        """Recreate client after drop (paho auto-reconnect alone was unreliable)."""
+
+        def _later() -> None:
+            time.sleep(delay_s)
+            if not self._want_connected or self._connected:
+                return
+            debug_log.info("mqtt", "scheduled reconnect after drop")
+            self.connect_broker(force=True)
+
+        threading.Thread(target=_later, name="mqtt-reconnect", daemon=True).start()
 
     def _start_watchdog(self) -> None:
         if self._watchdog_thread and self._watchdog_thread.is_alive():
             return
 
         def _loop() -> None:
-            while not self._watchdog_stop.wait(5.0):
-                if self._connected:
+            while not self._watchdog_stop.wait(8.0):
+                if not self._want_connected or self._connected or self._connecting:
                     continue
-                # Only retry when lab Wi‑Fi actually reaches the broker.
                 if not self.broker_reachable(timeout_s=1.2):
                     continue
                 with self._reconnect_lock:
-                    if self._connected:
+                    if self._connected or self._connecting:
                         continue
-                    debug_log.warn(
-                        "mqtt",
-                        "watchdog: TCP OK but MQTT down — reconnecting",
-                    )
+                    debug_log.warn("mqtt", "watchdog: TCP OK, MQTT down — reconnect")
                     try:
                         self.connect_broker(force=True)
                     except Exception as exc:
@@ -374,9 +397,11 @@ class MqttBridge:
             )
             if not ok:
                 failed_reason.append(mqtt_rc_str(reason_code))
+                self._connecting = False
                 connected.set()
                 return
             self._connected = True
+            self._connecting = False
             connected.set()
             try:
                 self._apply_subscriptions(c)
@@ -401,7 +426,11 @@ class MqttBridge:
         def on_disconnect(c, userdata, flags, reason_code, properties=None):
             debug_log.warn("mqtt", "on_disconnect", reason=mqtt_rc_str(reason_code))
             self._connected = False
+            self._connecting = False
             self._emit({"type": "mqttDisconnected", "reason": mqtt_rc_str(reason_code)})
+            # Recreate clean client (same approach as re-running test_mqtt.py)
+            if self._want_connected:
+                self._schedule_reconnect(2.0)
 
         def on_message(c, userdata, msg):
             try:
@@ -419,28 +448,42 @@ class MqttBridge:
             self._client = client
 
         try:
+            # Exact order that worked in test_mqtt.py yesterday
             client.connect(self.host, self.port, keepalive=60)
             client.loop_start()
             if not connected.wait(timeout=12):
                 debug_log.error("mqtt", "CONNACK timeout")
-                self._emit({"type": "mqttError", "message": "CONNACK timeout (12s) — vérifie Wi-Fi hyperdrive + user/password"})
-                self.disconnect_broker()
+                self._connecting = False
+                self._emit({"type": "mqttError", "message": "CONNACK timeout (12s)"})
+                if self._client is client:
+                    self._drop_client_unlocked()
+                if self._want_connected:
+                    self._schedule_reconnect(3.0)
                 return
             if failed_reason:
                 msg = f"MQTT rejected: {failed_reason[0]}"
                 debug_log.error("mqtt", msg)
+                self._connecting = False
                 self._emit({"type": "mqttError", "message": msg})
-                self.disconnect_broker()
+                if self._client is client:
+                    with self._lock:
+                        self._drop_client_unlocked()
                 return
         except Exception as exc:
             debug_log.exception("mqtt", "connect_sync failed", exc)
+            self._connecting = False
             self._emit({"type": "mqttError", "message": f"connect failed: {exc}"})
-            self.disconnect_broker()
+            if self._client is client:
+                with self._lock:
+                    self._drop_client_unlocked()
+            if self._want_connected:
+                self._schedule_reconnect(3.0)
 
     def _drop_client_unlocked(self) -> None:
         client = self._client
         self._client = None
         self._connected = False
+        self._connecting = False
         if client is None:
             return
         try:

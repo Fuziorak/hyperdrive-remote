@@ -29,7 +29,8 @@ _ws_lock = threading.Lock()
 _had_ui_client = False
 _idle_shutdown_token = 0
 # Grace so a page refresh does not kill the server mid-reload.
-_IDLE_SHUTDOWN_S = 3.0
+# Longer grace: Wi‑Fi roam / tab refresh must not kill MQTT mid-handshake.
+_IDLE_SHUTDOWN_S = 12.0
 
 
 def _shutdown_process(reason: str) -> None:
