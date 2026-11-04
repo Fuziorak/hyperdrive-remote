@@ -1063,9 +1063,23 @@
     toast("Connexion au lab…");
     dbg("INFO", "autoBoot start");
 
-    // Probe TCP first so the UI explains Wi‑Fi issues clearly.
+    // Warmup may already have MQTT up — don't block on a slow ping.
     try {
-      const ping = await api("/api/broker/ping");
+      const snap = await api("/api/state", { timeoutMs: 2500 });
+      applySnapshot(snap);
+      if (snap.mqttConnected) {
+        state.autoScanned = true;
+        toast("Lab connecté · scan…");
+        dbg("INFO", "autoBoot MQTT already up");
+        await startAutoScan();
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      const ping = await api("/api/broker/ping", { timeoutMs: 2500 });
       if (ping.reachable === false) {
         $("mqttPill").dataset.state = "err";
         $("mqttLabel").textContent = "Hors Wi‑Fi hyperdrive";
@@ -1084,7 +1098,7 @@
       dbg("ERROR", "autoBoot connect error", { error: err.message });
     }
 
-    const ok = await waitForMqtt(20000);
+    const ok = await waitForMqtt(15000);
     if (ok) {
       state.autoScanned = true;
       toast("Lab connecté · scan…");

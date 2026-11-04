@@ -27,46 +27,16 @@ orch = MqttBridge()
 _ws_clients: list[Any] = []
 _ws_lock = threading.Lock()
 _had_ui_client = False
-_idle_shutdown_token = 0
-# Grace after last UI activity. Too short killed MQTT while the user still raced.
-_IDLE_SHUTDOWN_S = 90.0
-
-
-def _shutdown_process(reason: str) -> None:
-    debug_log.info("system", "shutting down server", reason=reason)
-    try:
-        orch.disconnect_broker()
-    except Exception:
-        pass
-    # Hard exit: Flask's threaded server has no clean stop API.
-    os._exit(0)
+# Idle auto-exit disabled: it killed MQTT mid-session and left a zombie process
+# that the shortcut kept reusing ("server already up"). Stop via the launcher instead.
 
 
 def _schedule_idle_shutdown() -> None:
-    """Quit when the browser tab/window is gone (last WebSocket closed)."""
-    global _idle_shutdown_token
-    with _ws_lock:
-        _idle_shutdown_token += 1
-        token = _idle_shutdown_token
-
-    def _watch() -> None:
-        time.sleep(_IDLE_SHUTDOWN_S)
-        with _ws_lock:
-            if token != _idle_shutdown_token:
-                return
-            if _ws_clients:
-                return
-            if not _had_ui_client:
-                return
-        _shutdown_process("no UI clients left")
-
-    threading.Thread(target=_watch, name="idle-shutdown", daemon=True).start()
+    return
 
 
 def _cancel_idle_shutdown() -> None:
-    global _idle_shutdown_token
-    with _ws_lock:
-        _idle_shutdown_token += 1
+    return
 
 
 def _broadcast(event: dict[str, Any]) -> None:

@@ -113,7 +113,7 @@ class MqttBridge:
         if mqtt_password is not None:
             self.password = mqtt_password
 
-    def broker_reachable(self, timeout_s: float = 1.5) -> bool:
+    def broker_reachable(self, timeout_s: float = 0.8) -> bool:
         import socket
 
         try:
