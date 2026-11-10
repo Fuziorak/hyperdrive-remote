@@ -978,10 +978,14 @@
         const enable = e.target.checked;
         const data = await api(`/api/vehicles/${encodeURIComponent(id)}/hold`, {
           method: "POST",
-          body: JSON.stringify({ enable, interval: 1.5 }),
+          body: JSON.stringify({ enable, interval: 0.35 }),
         });
         applySnapshot(data.state);
-        toast(enable ? `Maintien ${slot} ON` : `Maintien ${slot} OFF`);
+        toast(
+          enable
+            ? `Piste ${slot}: vitesse renvoyée en boucle (robustesse)`
+            : `Piste ${slot}: envoi unique seulement`
+        );
       } catch (err) {
         e.target.checked = false;
         if (err.message !== "no vehicle") toast(err.message);

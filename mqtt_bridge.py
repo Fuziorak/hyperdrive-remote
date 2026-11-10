@@ -25,7 +25,7 @@ DEFAULT_USER = "Your_mom"
 DEFAULT_PASSWORD = ""  # set in UI if MQTT Explorer uses one
 # Lab host id observed on broker: Anki/Hosts/U/hyperdrive/...
 DEFAULT_HOST_ID = "hyperdrive"
-# Race hold: refresh speed often so the car never coasts between pulses.
+# Optional robustness mode: republish last speed while hold checkbox is on.
 _HOLD_INTERVAL_S = 0.35
 
 
@@ -284,13 +284,11 @@ class MqttBridge:
         })
 
     def set_speed(self, vehicle_id: str, velocity: int, acceleration: int = 1000) -> None:
+        """Send speed once. Regular republish only if hold checkbox is enabled for this car."""
         self._remember(vehicle_id, velocity=velocity, acceleration=acceleration)
         self._publish_speed(vehicle_id, int(velocity), int(acceleration))
-        # Anki drops speed unless refreshed. Auto-hold = race cruise (speed-only ticks).
-        if int(velocity) > 0:
-            if not self._hold_enabled.get(vehicle_id):
-                self.set_hold(vehicle_id, True, interval_s=_HOLD_INTERVAL_S)
-        elif self._hold_enabled.get(vehicle_id):
+        # STOP / vitesse 0 → couper la republication si elle était active.
+        if int(velocity) <= 0 and self._hold_enabled.get(vehicle_id):
             self.set_hold(vehicle_id, False)
 
     def _publish_speed(self, vehicle_id: str, velocity: int, acceleration: int) -> None:

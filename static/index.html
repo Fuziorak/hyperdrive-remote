@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261104i" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261110a" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -137,10 +137,11 @@
           </div>
         </div>
         <div class="hold-bar compact">
-          <label class="hold-toggle">
+          <label class="hold-toggle" title="Décoché : chaque commande est envoyée une seule fois. Coché : la dernière vitesse est renvoyée ~3×/s pour plus de robustesse.">
             <input class="hold-toggle-input" type="checkbox" />
-            <span>Maintenir la vitesse (auto si &gt; 0)</span>
+            <span>Renvoyer la vitesse en boucle (robustesse)</span>
           </label>
+          <p class="hold-hint">Décoché = envoi unique à chaque changement · Coché = republication régulière de la dernière vitesse</p>
         </div>
         <div class="telemetry">
           <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
@@ -209,10 +210,11 @@
           </div>
         </div>
         <div class="hold-bar compact">
-          <label class="hold-toggle">
+          <label class="hold-toggle" title="Décoché : chaque commande est envoyée une seule fois. Coché : la dernière vitesse est renvoyée ~3×/s pour plus de robustesse.">
             <input class="hold-toggle-input" type="checkbox" />
-            <span>Maintenir la vitesse (auto si &gt; 0)</span>
+            <span>Renvoyer la vitesse en boucle (robustesse)</span>
           </label>
+          <p class="hold-hint">Décoché = envoi unique à chaque changement · Coché = republication régulière de la dernière vitesse</p>
         </div>
         <div class="telemetry">
           <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
@@ -320,6 +322,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261104i"></script>
+  <script src="/static/app.js?v=20261110a"></script>
 </body>
 </html>

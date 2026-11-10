@@ -305,7 +305,7 @@ def api_hold(vehicle_id: str):
     enabled = bool(data.get("enable", False))
     interval = float(data.get("interval", 1.5))
     try:
-        orch.set_hold(vehicle_id, enabled=enabled, interval_s=max(0.5, min(10.0, interval)))
+        orch.set_hold(vehicle_id, enabled=enabled, interval_s=max(0.3, min(10.0, interval)))
         return jsonify({"ok": True, "state": orch.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
