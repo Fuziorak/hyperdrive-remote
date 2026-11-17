@@ -385,10 +385,12 @@ class MqttBridge:
         self.set_speed(vehicle_id, max_speed, accel)
         return {"ok": True, "vehicleId": vehicle_id}
 
-    def start_mapping(self, vehicle_id: str, cruise_speed: int = 450) -> dict[str, Any]:
+    def start_mapping(self, vehicle_id: str, cruise_speed: int = 300) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
         out = self.track.start_mapping(vehicle_id)
-        self.set_speed(vehicle_id, cruise_speed, 1000)
+        # Mapping: vitesse plafonnée pour des mesures L/R stables
+        spd = max(0, min(300, int(cruise_speed)))
+        self.set_speed(vehicle_id, spd, 1000)
         return out
 
     def stop_mapping(self, finalize: bool = False) -> dict[str, Any]:

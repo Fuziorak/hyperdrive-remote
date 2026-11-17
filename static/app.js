@@ -1825,7 +1825,7 @@
       });
       const data = await api("/api/track/mapping/start", {
         method: "POST",
-        body: JSON.stringify({ vehicleId: id, cruiseSpeed: 450 }),
+        body: JSON.stringify({ vehicleId: id, cruiseSpeed: 300 }),
       });
       applyTrackSnapshot(data.track);
       toast(`Mapping: ${partCount} bout${partCount > 1 ? "s" : ""} × 2 tours`);
