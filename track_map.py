@@ -509,7 +509,7 @@ class TrackController:
         return {"ok": True, "map": self.map}
 
     def set_part_count(self, count: int) -> dict[str, Any]:
-        n = max(3, min(64, int(count)))
+        n = max(1, min(50, int(count)))
         self.part_count = n
         if self.map:
             self.map["partCount"] = n

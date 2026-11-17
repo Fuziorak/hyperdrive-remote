@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261117i" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261117j" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -315,7 +315,7 @@
         <div class="map-seg-tools">
           <label>
             Nb bouts
-            <input id="mapPartCount" type="number" min="3" max="64" value="8" title="Nombre de parties / pièces de la piste" />
+            <input id="mapPartCount" type="number" min="1" max="50" value="8" title="Nombre de bouts de la course (1 à 50)" />
           </label>
           <button id="btnPartCount" class="btn secondary" type="button">Fixer bouts</button>
           <label>
@@ -415,6 +415,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261117i"></script>
+  <script src="/static/app.js?v=20261117j"></script>
 </body>
 </html>

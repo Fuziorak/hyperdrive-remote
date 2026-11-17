@@ -1818,23 +1818,17 @@
   $("btnMapStart").addEventListener("click", async () => {
     try {
       const id = requireSlot("A");
-      const partCount = Number($("mapPartCount").value) || 0;
-      if (partCount >= 3) {
-        await api("/api/track/part-count", {
-          method: "POST",
-          body: JSON.stringify({ partCount }),
-        });
-      }
+      const partCount = Math.max(1, Math.min(50, Number($("mapPartCount").value) || 1));
+      await api("/api/track/part-count", {
+        method: "POST",
+        body: JSON.stringify({ partCount }),
+      });
       const data = await api("/api/track/mapping/start", {
         method: "POST",
         body: JSON.stringify({ vehicleId: id, cruiseSpeed: 450 }),
       });
       applyTrackSnapshot(data.track);
-      toast(
-        partCount >= 3
-          ? `Mapping: ${partCount} bouts × 2 tours`
-          : "Mapping: 2 tours (fixe d’abord le nb de bouts si possible)"
-      );
+      toast(`Mapping: ${partCount} bout${partCount > 1 ? "s" : ""} × 2 tours`);
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);
     }
@@ -1879,12 +1873,13 @@
 
   $("btnPartCount").addEventListener("click", async () => {
     try {
-      const partCount = Number($("mapPartCount").value) || 0;
+      const partCount = Math.max(1, Math.min(50, Number($("mapPartCount").value) || 1));
       const data = await api("/api/track/part-count", {
         method: "POST",
         body: JSON.stringify({ partCount }),
       });
       applyTrackSnapshot(data.track);
+      $("mapPartCount").value = String(data.partCount);
       toast(`Nombre de bouts = ${data.partCount}`);
     } catch (err) {
       toast(err.message);
