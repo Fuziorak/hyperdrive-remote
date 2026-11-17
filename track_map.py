@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -25,7 +26,17 @@ _MATCH_RATIO = 1.1
 # Floor so tiny distances still match without exploding the ratio.
 _MATCH_ABS_FLOOR = 3.0
 _MIN_SEGMENTS = 3
-_MAP_PATH = Path(__file__).resolve().parent / "maps" / "track.json"
+_MAPS_DIR = Path(__file__).resolve().parent / "maps"
+_MAP_PATH = _MAPS_DIR / "track.json"
+_COURSES_DIR = _MAPS_DIR / "courses"
+
+
+def _safe_course_name(name: str) -> str:
+    cleaned = re.sub(r"[^\w\- ]+", "", (name or "").strip(), flags=re.UNICODE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        raise ValueError("Nom de course invalide")
+    return cleaned[:64]
 
 
 def classify_turn(left: float, right: float) -> str:
@@ -120,6 +131,7 @@ class TrackController:
         self.start_segment = 0
         self.current_segment = 0
         self.map: dict[str, Any] | None = self._load_map()
+        self.course_name: str | None = (self.map or {}).get("name") if self.map else None
 
     def snapshot(self) -> dict[str, Any]:
         preview = self._preview_map() if self.mapping and self._raw else None
@@ -140,6 +152,8 @@ class TrackController:
             "map": self.map,
             "preview": preview,
             "lastSample": self._raw[-1] if self._raw else None,
+            "courseName": self.course_name,
+            "courses": self.list_courses(),
         }
 
     def _preview_map(self) -> dict[str, Any] | None:
@@ -193,7 +207,80 @@ class TrackController:
         if not self.map:
             return
         _MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if self.course_name:
+            self.map["name"] = self.course_name
         _MAP_PATH.write_text(json.dumps(self.map, indent=2), encoding="utf-8")
+
+    def list_courses(self) -> list[dict[str, Any]]:
+        _COURSES_DIR.mkdir(parents=True, exist_ok=True)
+        out: list[dict[str, Any]] = []
+        for path in sorted(_COURSES_DIR.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                out.append(
+                    {
+                        "name": data.get("name") or path.stem,
+                        "segmentCount": data.get("segmentCount") or len(data.get("segments") or []),
+                        "createdAt": data.get("createdAt"),
+                        "savedAt": data.get("savedAt"),
+                        "file": path.name,
+                    }
+                )
+            except Exception:
+                continue
+        return out
+
+    def save_course(self, name: str) -> dict[str, Any]:
+        if not self.map or not self.map.get("segments"):
+            raise RuntimeError("Aucune map à sauvegarder — mappe d’abord la piste")
+        safe = _safe_course_name(name)
+        _COURSES_DIR.mkdir(parents=True, exist_ok=True)
+        self.course_name = safe
+        self.map["name"] = safe
+        self.map["savedAt"] = time.time()
+        path = _COURSES_DIR / f"{safe}.json"
+        path.write_text(json.dumps(self.map, indent=2), encoding="utf-8")
+        self._save_map()
+        self._emit({"type": "courseSaved", "name": safe, "courses": self.list_courses(), "map": self.map})
+        return {"ok": True, "name": safe, "courses": self.list_courses()}
+
+    def load_course(self, name: str) -> dict[str, Any]:
+        safe = _safe_course_name(name)
+        path = _COURSES_DIR / f"{safe}.json"
+        if not path.exists():
+            raise RuntimeError(f"Course introuvable: {safe}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not data.get("segments"):
+            raise RuntimeError("Fichier course invalide (pas de segments)")
+        self.map = data
+        self.course_name = data.get("name") or safe
+        self.start_segment = int(data.get("startSegment", 0)) % max(1, len(data["segments"]))
+        self.current_segment = self.start_segment
+        self._save_map()
+        self._emit(
+            {
+                "type": "courseLoaded",
+                "name": self.course_name,
+                "map": self.map,
+                "startSegment": self.start_segment,
+                "currentSegment": self.current_segment,
+                "courses": self.list_courses(),
+            }
+        )
+        return {"ok": True, "name": self.course_name, "map": self.map}
+
+    def delete_course(self, name: str) -> dict[str, Any]:
+        safe = _safe_course_name(name)
+        path = _COURSES_DIR / f"{safe}.json"
+        if path.exists():
+            path.unlink()
+        if self.course_name == safe:
+            self.course_name = None
+            if self.map:
+                self.map.pop("name", None)
+                self._save_map()
+        self._emit({"type": "courseDeleted", "name": safe, "courses": self.list_courses()})
+        return {"ok": True, "courses": self.list_courses()}
 
     def start_latency_test(self, vehicle_id: str) -> dict[str, Any]:
         self.latency_active = True

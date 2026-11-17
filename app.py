@@ -60,6 +60,9 @@ def _broadcast(event: dict[str, Any]) -> None:
         "mapPosition",
         "mapStartSegment",
         "mapUpdated",
+        "courseSaved",
+        "courseLoaded",
+        "courseDeleted",
     }:
         debug_log.info("event", f"broadcast {et}", event=event)
     elif et == "mqttOut":
@@ -403,6 +406,50 @@ def api_track_race_start():
 def api_track_race_stop():
     try:
         out = orch.stop_mapped_race()
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.get("/api/track/courses")
+def api_track_courses():
+    return jsonify({"ok": True, "courses": orch.track.list_courses(), "track": orch.track.snapshot()})
+
+
+@app.post("/api/track/courses/save")
+def api_track_courses_save():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Nom de course requis"}), 400
+    try:
+        out = orch.track.save_course(name)
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/courses/load")
+def api_track_courses_load():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Nom de course requis"}), 400
+    try:
+        out = orch.track.load_course(name)
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/courses/delete")
+def api_track_courses_delete():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Nom de course requis"}), 400
+    try:
+        out = orch.track.delete_course(name)
         return jsonify({**out, "track": orch.track.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400

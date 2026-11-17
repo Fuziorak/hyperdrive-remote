@@ -344,12 +344,23 @@ body {
   gap: 0.5rem;
   align-items: end;
 }
-.map-seg-tools label {
+.map-seg-tools label,
+.map-course-tools label {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.78rem;
   color: var(--muted);
+}
+.map-course-tools {
+  display: grid;
+  grid-template-columns: 1.2fr auto 1.2fr auto auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+.map-course-tools input,
+.map-course-tools select {
+  width: 100%;
 }
 .map-hint { margin: 0; }
 .advanced-panel {
@@ -809,7 +820,7 @@ input[type="range"] {
   .fleet-panel, .race-panel, .profiles-panel { grid-column: auto; }
 }
 @media (max-width: 900px) {
-  .layout, .form-grid, .control-grid, .telemetry, .lights-grid, .manual-add, .profile-save, .race-mini, .map-seg-tools {
+  .layout, .form-grid, .control-grid, .telemetry, .lights-grid, .manual-add, .profile-save, .race-mini, .map-seg-tools, .map-course-tools {
     grid-template-columns: 1fr;
   }
   .card-block.span-2 { grid-column: auto; }

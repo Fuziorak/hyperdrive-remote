@@ -83,6 +83,8 @@
       lapsDone: 0,
       lapsRequired: 2,
       verifyCount: 0,
+      courseName: null,
+      courses: [],
     },
   };
 
@@ -213,7 +215,25 @@
     state.track.lapsRequired = track.lapsRequired || 2;
     state.track.verifyCount = track.verifyCount || 0;
     state.track.lastSample = track.lastSample || null;
+    state.track.courseName = track.courseName || null;
+    state.track.courses = track.courses || [];
+    renderCourseSelect();
     renderTrackMap();
+  }
+
+  function renderCourseSelect() {
+    const sel = $("courseSelect");
+    if (!sel) return;
+    const current = state.track.courseName || sel.value || "";
+    const courses = state.track.courses || [];
+    sel.innerHTML = `<option value="">— aucune —</option>` + courses.map((c) => {
+      const label = `${c.name} (${c.segmentCount || "?"} seg.)`;
+      return `<option value="${escapeHtml(c.name)}">${escapeHtml(label)}</option>`;
+    }).join("");
+    if (current && courses.some((c) => c.name === current)) sel.value = current;
+    if (state.track.courseName && $("courseNameInput") && !$("courseNameInput").value) {
+      $("courseNameInput").value = state.track.courseName;
+    }
   }
 
   function activeTrackMap() {
@@ -263,9 +283,10 @@
     } else if (state.track.raceActive) {
       status.textContent = `Course map · segment ${state.track.currentSegment}`;
     } else if (segs.length) {
-      status.textContent = `Map prête · ${segs.length} segments · clic = départ`;
+      const cname = state.track.courseName ? ` · ${state.track.courseName}` : "";
+      status.textContent = `Map prête${cname} · ${segs.length} segments · clic = départ`;
     } else {
-      status.textContent = "Aucune map — lance un mapping depuis la piste A";
+      status.textContent = "Aucune map — lance un mapping ou charge une course sauvée";
     }
 
     startLabel.textContent = segs.length && !state.track.mapping ? String(state.track.startSegment) : (segs.length ? "…" : "—");
@@ -1455,6 +1476,31 @@
         state.track.map = msg.map || state.track.map;
         renderTrackMap();
         break;
+      case "courseSaved":
+        state.track.courseName = msg.name || state.track.courseName;
+        state.track.courses = msg.courses || state.track.courses;
+        if (msg.map) state.track.map = msg.map;
+        renderCourseSelect();
+        renderTrackMap();
+        toast(`Course sauvée: ${msg.name}`);
+        break;
+      case "courseLoaded":
+        state.track.courseName = msg.name || null;
+        state.track.map = msg.map || null;
+        state.track.preview = null;
+        state.track.courses = msg.courses || state.track.courses;
+        state.track.startSegment = msg.startSegment ?? 0;
+        state.track.currentSegment = msg.currentSegment ?? 0;
+        renderCourseSelect();
+        renderTrackMap();
+        toast(`Course chargée: ${msg.name}`);
+        break;
+      case "courseDeleted":
+        state.track.courses = msg.courses || [];
+        if (state.track.courseName === msg.name) state.track.courseName = null;
+        renderCourseSelect();
+        toast(`Course supprimée: ${msg.name}`);
+        break;
       default:
         break;
     }
@@ -1735,6 +1781,63 @@
       });
       applyTrackSnapshot(data.track);
       toast(`Segment ${index} → ${maxSpeed}`);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnCourseSave").addEventListener("click", async () => {
+    try {
+      const name = ($("courseNameInput").value || "").trim() || $("courseSelect").value;
+      if (!name) {
+        toast("Donne un nom à la course");
+        return;
+      }
+      const data = await api("/api/track/courses/save", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      applyTrackSnapshot(data.track);
+      $("courseNameInput").value = data.name || name;
+      toast(`Course sauvée: ${data.name || name}`);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnCourseLoad").addEventListener("click", async () => {
+    try {
+      const name = $("courseSelect").value || ($("courseNameInput").value || "").trim();
+      if (!name) {
+        toast("Choisis une course");
+        return;
+      }
+      const data = await api("/api/track/courses/load", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      applyTrackSnapshot(data.track);
+      $("courseNameInput").value = data.name || name;
+      toast(`Course chargée: ${data.name || name}`);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnCourseDelete").addEventListener("click", async () => {
+    try {
+      const name = $("courseSelect").value || ($("courseNameInput").value || "").trim();
+      if (!name) {
+        toast("Choisis une course");
+        return;
+      }
+      if (!window.confirm(`Supprimer la course « ${name} » ?`)) return;
+      const data = await api("/api/track/courses/delete", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      applyTrackSnapshot(data.track);
+      toast(`Course supprimée: ${name}`);
     } catch (err) {
       toast(err.message);
     }
