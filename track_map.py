@@ -138,6 +138,22 @@ class TrackController:
         self.current_segment = 0
         self.map: dict[str, Any] | None = self._load_map()
         self.course_name: str | None = (self.map or {}).get("name") if self.map else None
+        self._restore_last_course()
+
+    def _restore_last_course(self) -> None:
+        """Au démarrage, reprendre la dernière map nommée si disponible."""
+        try:
+            pointer = _MAPS_DIR / "last_course.txt"
+            if not pointer.exists():
+                return
+            name = pointer.read_text(encoding="utf-8").strip()
+            if not name:
+                return
+            path = _COURSES_DIR / f"{_safe_course_name(name)}.json"
+            if path.exists():
+                self.load_course(name)
+        except Exception:
+            pass
 
     def snapshot(self) -> dict[str, Any]:
         preview = self._preview_map() if self.mapping and self._raw else None
@@ -245,9 +261,12 @@ class TrackController:
         self.course_name = safe
         self.map["name"] = safe
         self.map["savedAt"] = time.time()
+        self.map["startSegment"] = int(self.start_segment)
         path = _COURSES_DIR / f"{safe}.json"
         path.write_text(json.dumps(self.map, indent=2), encoding="utf-8")
         self._save_map()
+        # Pointeur de reprise au prochain lancement
+        (_MAPS_DIR / "last_course.txt").write_text(safe, encoding="utf-8")
         self._emit({"type": "courseSaved", "name": safe, "courses": self.list_courses(), "map": self.map})
         return {"ok": True, "name": safe, "courses": self.list_courses()}
 
@@ -255,15 +274,37 @@ class TrackController:
         safe = _safe_course_name(name)
         path = _COURSES_DIR / f"{safe}.json"
         if not path.exists():
-            raise RuntimeError(f"Course introuvable: {safe}")
+            raise RuntimeError(f"Map introuvable: {safe}")
         data = json.loads(path.read_text(encoding="utf-8"))
         if not data.get("segments"):
-            raise RuntimeError("Fichier course invalide (pas de segments)")
+            raise RuntimeError("Fichier map invalide (pas de segments)")
+        # Rebuild path drawing if older save lacks it
+        if not data.get("path") and data.get("segments"):
+            rebuilt = self._map_from_raw(
+                [
+                    {
+                        "left": s["left"],
+                        "right": s["right"],
+                        "maxSpeed": s.get("maxSpeed", 700),
+                    }
+                    for s in data["segments"]
+                ],
+                draft=False,
+            )
+            for i, seg in enumerate(rebuilt["segments"]):
+                if i < len(data["segments"]):
+                    seg["maxSpeed"] = int(data["segments"][i].get("maxSpeed", seg.get("maxSpeed", 700)))
+            rebuilt["name"] = data.get("name") or safe
+            rebuilt["savedAt"] = data.get("savedAt")
+            rebuilt["startSegment"] = data.get("startSegment", 0)
+            data = rebuilt
         self.map = data
         self.course_name = data.get("name") or safe
-        self.start_segment = int(data.get("startSegment", 0)) % max(1, len(data["segments"]))
+        n = max(1, len(data["segments"]))
+        self.start_segment = int(data.get("startSegment", 0)) % n
         self.current_segment = self.start_segment
         self._save_map()
+        (_MAPS_DIR / "last_course.txt").write_text(self.course_name, encoding="utf-8")
         self._emit(
             {
                 "type": "courseLoaded",

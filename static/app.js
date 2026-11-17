@@ -1481,8 +1481,21 @@
         state.track.lapsDone = 2;
         state.track.map = msg.map || null;
         state.track.preview = null;
-        toast("2 tours OK — map prête");
         renderTrackMap();
+        toast("2 tours OK — dessine un nom puis Sauver map");
+        {
+          const input = $("courseNameInput");
+          if (input) {
+            if (!input.value.trim()) {
+              const stamp = new Date();
+              const hh = String(stamp.getHours()).padStart(2, "0");
+              const mm = String(stamp.getMinutes()).padStart(2, "0");
+              input.value = `map-${hh}${mm}`;
+            }
+            input.focus();
+            input.select();
+          }
+        }
         break;
       case "mappingStopped":
         state.track.mapping = false;
@@ -1838,20 +1851,41 @@
     }
   });
 
+  async function saveNamedMap() {
+    const name = ($("courseNameInput").value || "").trim() || $("courseSelect").value;
+    if (!name) {
+      toast("Donne un nom à la map");
+      $("courseNameInput")?.focus();
+      return;
+    }
+    const data = await api("/api/track/courses/save", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    applyTrackSnapshot(data.track);
+    $("courseNameInput").value = data.name || name;
+    toast(`Map sauvée: ${data.name || name}`);
+  }
+
+  async function loadNamedMap(name) {
+    const chosen = name || $("courseSelect").value || ($("courseNameInput").value || "").trim();
+    if (!chosen) {
+      toast("Choisis une map à charger");
+      return;
+    }
+    const data = await api("/api/track/courses/load", {
+      method: "POST",
+      body: JSON.stringify({ name: chosen }),
+    });
+    applyTrackSnapshot(data.track);
+    $("courseNameInput").value = data.name || chosen;
+    $("courseSelect").value = data.name || chosen;
+    toast(`Map chargée: ${data.name || chosen}`);
+  }
+
   $("btnCourseSave").addEventListener("click", async () => {
     try {
-      const name = ($("courseNameInput").value || "").trim() || $("courseSelect").value;
-      if (!name) {
-        toast("Donne un nom à la course");
-        return;
-      }
-      const data = await api("/api/track/courses/save", {
-        method: "POST",
-        body: JSON.stringify({ name }),
-      });
-      applyTrackSnapshot(data.track);
-      $("courseNameInput").value = data.name || name;
-      toast(`Course sauvée: ${data.name || name}`);
+      await saveNamedMap();
     } catch (err) {
       toast(err.message);
     }
@@ -1859,18 +1893,28 @@
 
   $("btnCourseLoad").addEventListener("click", async () => {
     try {
-      const name = $("courseSelect").value || ($("courseNameInput").value || "").trim();
-      if (!name) {
-        toast("Choisis une course");
-        return;
-      }
-      const data = await api("/api/track/courses/load", {
-        method: "POST",
-        body: JSON.stringify({ name }),
-      });
-      applyTrackSnapshot(data.track);
-      $("courseNameInput").value = data.name || name;
-      toast(`Course chargée: ${data.name || name}`);
+      await loadNamedMap();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("courseSelect").addEventListener("change", async () => {
+    const name = $("courseSelect").value;
+    if (!name) return;
+    $("courseNameInput").value = name;
+    try {
+      await loadNamedMap(name);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("courseNameInput").addEventListener("keydown", async (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    try {
+      await saveNamedMap();
     } catch (err) {
       toast(err.message);
     }
@@ -1880,16 +1924,16 @@
     try {
       const name = $("courseSelect").value || ($("courseNameInput").value || "").trim();
       if (!name) {
-        toast("Choisis une course");
+        toast("Choisis une map");
         return;
       }
-      if (!window.confirm(`Supprimer la course « ${name} » ?`)) return;
+      if (!window.confirm(`Supprimer la map « ${name} » ?`)) return;
       const data = await api("/api/track/courses/delete", {
         method: "POST",
         body: JSON.stringify({ name }),
       });
       applyTrackSnapshot(data.track);
-      toast(`Course supprimée: ${name}`);
+      toast(`Map supprimée: ${name}`);
     } catch (err) {
       toast(err.message);
     }

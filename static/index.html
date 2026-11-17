@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261117e" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261117f" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -323,22 +323,28 @@
           </label>
           <button id="btnMapSegSpeed" class="btn secondary" type="button">Appliquer vitesse</button>
         </div>
-        <div class="map-course-tools">
-          <label>
-            Nom course
-            <input id="courseNameInput" type="text" maxlength="64" placeholder="ex: ovale-lab" autocomplete="off" />
-          </label>
-          <button id="btnCourseSave" class="btn accent" type="button">Sauver course</button>
-          <label>
-            Courses sauvées
-            <select id="courseSelect">
-              <option value="">— aucune —</option>
-            </select>
-          </label>
-          <button id="btnCourseLoad" class="btn primary" type="button">Charger</button>
-          <button id="btnCourseDelete" class="btn ghost" type="button">Supprimer</button>
+        <div class="map-library">
+          <div class="panel-head compact">
+            <h3>Maps sauvegardées</h3>
+            <p>Enregistrer · reprendre plus tard</p>
+          </div>
+          <div class="map-course-tools">
+            <label>
+              Nom de la map
+              <input id="courseNameInput" type="text" maxlength="64" placeholder="ex: ovale-lab" autocomplete="off" />
+            </label>
+            <button id="btnCourseSave" class="btn accent" type="button">Sauver map</button>
+            <label>
+              Reprendre une map
+              <select id="courseSelect">
+                <option value="">— choisir —</option>
+              </select>
+            </label>
+            <button id="btnCourseLoad" class="btn primary" type="button">Charger map</button>
+            <button id="btnCourseDelete" class="btn ghost" type="button">Supprimer</button>
+          </div>
         </div>
-        <p class="hint map-hint">Sauve une map pour la rejouer plus tard. Clic segment = départ (rouge). Segment courant = surbrillance.</p>
+        <p class="hint map-hint">Après un mapping : donne un nom → Sauver map. Plus tard : choisis-la → Charger map. Clic segment = départ (rouge).</p>
       </aside>
     </section>
 
@@ -396,6 +402,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261117e"></script>
+  <script src="/static/app.js?v=20261117f"></script>
 </body>
 </html>
