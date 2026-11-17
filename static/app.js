@@ -1900,16 +1900,30 @@
     try {
       const id = requireSlot("A");
       const partCount = Math.max(1, Math.min(50, Number($("mapPartCount").value) || 1));
-      await api("/api/track/part-count", {
-        method: "POST",
-        body: JSON.stringify({ partCount }),
-      });
+      // Un seul appel atomique : évite qu'un part-count/rebuild sur une vieille map
+      // interfère, et garde le mapping actif même si le publish vitesse rate.
       const data = await api("/api/track/mapping/start", {
         method: "POST",
-        body: JSON.stringify({ vehicleId: id, cruiseSpeed: 300 }),
+        body: JSON.stringify({
+          vehicleId: id,
+          cruiseSpeed: 300,
+          partCount,
+        }),
       });
-      applyTrackSnapshot(data.track);
-      toast(`Mapping: ${partCount} bout${partCount > 1 ? "s" : ""} × 2 tours`);
+      state.track.mapping = true;
+      state.track.map = null;
+      state.track.preview = null;
+      state.track.rawCount = 0;
+      state.track.lapsDone = 0;
+      state.track.partCount = data.partCount || partCount;
+      if ($("mapPartCount")) $("mapPartCount").value = String(state.track.partCount);
+      applyTrackSnapshot(data.track || { mapping: true, map: null, preview: null, rawCount: 0 });
+      if (data.speedOk === false) {
+        toast(`Mapping démarré (vitesse non publiée: ${data.speedError || "MQTT?"})`);
+      } else {
+        toast(`Mapping démarré · ${state.track.partCount} bout(s) · 300 max`);
+      }
+      logLine("ok", `Mapping ON ${id} · parts=${state.track.partCount}`);
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);
     }

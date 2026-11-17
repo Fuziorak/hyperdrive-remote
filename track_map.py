@@ -648,29 +648,40 @@ class TrackController:
         self._emit({"type": "latencyStarted", "vehicleId": vehicle_id})
         return {"ok": True, "vehicleId": vehicle_id}
 
-    def start_mapping(self, vehicle_id: str) -> dict[str, Any]:
+    def start_mapping(self, vehicle_id: str, part_count: int | None = None) -> dict[str, Any]:
         # Couper course/latence + oublier l'ancienne map active (sinon elle bloque le live)
         if self.race_active:
             self.stop_race()
         if self.latency_active:
             self.latency_active = False
             self.latency_vehicle = None
+        kept_parts = self.part_count
         self._clear_session_data(keep_courses=True)
+        if part_count is not None:
+            self.part_count = max(1, min(50, int(part_count)))
+        elif kept_parts:
+            self.part_count = kept_parts
         self.mapping = True
-        self.mapping_vehicle = vehicle_id
-        self._skip_first = True
+        self.mapping_vehicle = str(vehicle_id).strip()
+        self._skip_first = True  # 1ʳᵉ mesure (souvent MQTT retenu) ignorée
         self._mapping_started_at = time.time()
         self._emit(
             {
                 "type": "mappingStarted",
-                "vehicleId": vehicle_id,
+                "vehicleId": self.mapping_vehicle,
                 "lapsRequired": 2,
+                "partCount": self.part_count,
                 "map": None,
                 "preview": None,
                 "rawCount": 0,
             }
         )
-        return {"ok": True, "vehicleId": vehicle_id}
+        return {
+            "ok": True,
+            "vehicleId": self.mapping_vehicle,
+            "partCount": self.part_count,
+            "mapping": True,
+        }
 
     def stop_mapping(self, finalize: bool = False) -> dict[str, Any]:
         self.mapping = False
@@ -911,10 +922,8 @@ class TrackController:
 
         map_vid = (self.mapping_vehicle or "").upper()
         if self.mapping and map_vid and map_vid == str(vehicle_id).upper():
-            # Ignore les wheelDistance trop tôt (message MQTT retenu / stale)
-            if self._mapping_started_at and (time.time() - self._mapping_started_at) < 0.35:
-                self._emit({"type": "mappingSkippedStale", "vehicleId": vehicle_id})
-                return
+            # 1ʳᵉ mesure ignorée (souvent valeur MQTT retenue) — pas de fenêtre temps
+            # qui risquerait d'avaler de vrais traits.
             if self._skip_first:
                 self._skip_first = False
                 self._emit({"type": "mappingSkippedFirst", "vehicleId": vehicle_id})

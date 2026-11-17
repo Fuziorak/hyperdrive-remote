@@ -385,13 +385,33 @@ class MqttBridge:
         self.set_speed(vehicle_id, max_speed, accel)
         return {"ok": True, "vehicleId": vehicle_id}
 
-    def start_mapping(self, vehicle_id: str, cruise_speed: int = 300) -> dict[str, Any]:
+    def start_mapping(
+        self,
+        vehicle_id: str,
+        cruise_speed: int = 300,
+        part_count: int | None = None,
+    ) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
-        # Important: démarrer le tracking AVANT set_speed, et sans manual=
-        # (manual couperait le mapping via yield_to_manual).
-        out = self.track.start_mapping(vehicle_id)
+        # Tracking d'abord ; set_speed en manual=False pour ne pas couper le mapping.
+        out = self.track.start_mapping(vehicle_id, part_count=part_count)
         spd = max(0, min(300, int(cruise_speed)))
-        self.set_speed(vehicle_id, spd, 1000, manual=False)
+        speed_ok = True
+        speed_error = None
+        try:
+            self.set_speed(vehicle_id, spd, 1000, manual=False)
+        except Exception as exc:
+            # Le mapping doit quand même démarrer même si le publish échoue un instant
+            speed_ok = False
+            speed_error = str(exc)
+            debug_log.warn("mqtt", "mapping speed publish failed", error=speed_error, vehicleId=vehicle_id)
+        out = {
+            **out,
+            "speed": spd,
+            "speedOk": speed_ok,
+            "speedError": speed_error,
+            "mapping": True,
+            "track": self.track.snapshot(),
+        }
         return out
 
     def stop_mapping(self, finalize: bool = False) -> dict[str, Any]:

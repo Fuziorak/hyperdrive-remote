@@ -358,9 +358,15 @@ def api_track_mapping_start():
     vehicle_id = str(data.get("vehicleId") or "").strip()
     if not vehicle_id:
         return jsonify({"ok": False, "error": "vehicleId requis"}), 400
+    part_count = data.get("partCount")
     try:
-        out = orch.start_mapping(vehicle_id, cruise_speed=int(data.get("cruiseSpeed", 300)))
-        return jsonify({**out, "track": orch.track.snapshot()})
+        out = orch.start_mapping(
+            vehicle_id,
+            cruise_speed=int(data.get("cruiseSpeed", 300)),
+            part_count=int(part_count) if part_count is not None else None,
+        )
+        track = out.pop("track", None) or orch.track.snapshot()
+        return jsonify({**out, "track": track})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
