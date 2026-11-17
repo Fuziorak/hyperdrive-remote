@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261117f" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261117g" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -314,6 +314,11 @@
         </div>
         <div class="map-seg-tools">
           <label>
+            Nb bouts
+            <input id="mapPartCount" type="number" min="3" max="64" value="8" title="Nombre de parties / pièces de la piste" />
+          </label>
+          <button id="btnPartCount" class="btn secondary" type="button">Fixer bouts</button>
+          <label>
             Segment
             <input id="mapSegIndex" type="number" min="0" value="0" />
           </label>
@@ -344,7 +349,7 @@
             <button id="btnCourseDelete" class="btn ghost" type="button">Supprimer</button>
           </div>
         </div>
-        <p class="hint map-hint">Après un mapping : donne un nom → Sauver map. Plus tard : choisis-la → Charger map. Clic segment = départ (rouge).</p>
+        <p class="hint map-hint">Fixe le nb de bouts avant de mapper. La courbe est fermée (début=fin). En course, reconnaissance assouplie (~1.3). Sauver/charger pour reprendre.</p>
       </aside>
     </section>
 
@@ -402,6 +407,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261117f"></script>
+  <script src="/static/app.js?v=20261117g"></script>
 </body>
 </html>

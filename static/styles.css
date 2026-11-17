@@ -388,7 +388,7 @@ body {
 .leg-start::before { background: #e23b3b; }
 .map-seg-tools {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: 0.7fr auto 0.7fr 0.9fr auto;
   gap: 0.5rem;
   align-items: end;
 }

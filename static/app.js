@@ -85,6 +85,7 @@
       verifyCount: 0,
       courseName: null,
       courses: [],
+      partCount: null,
     },
   };
 
@@ -217,6 +218,10 @@
     state.track.lastSample = track.lastSample || null;
     state.track.courseName = track.courseName || null;
     state.track.courses = track.courses || [];
+    state.track.partCount = track.partCount || track.map?.partCount || null;
+    if (state.track.partCount && $("mapPartCount")) {
+      $("mapPartCount").value = String(state.track.partCount);
+    }
     renderCourseSelect();
     renderTrackMap();
   }
@@ -1530,7 +1535,18 @@
       case "mapPosition":
         state.track.currentSegment = msg.currentSegment ?? 0;
         state.track.startSegment = msg.startSegment ?? state.track.startSegment;
+        if (msg.partCount) state.track.partCount = msg.partCount;
+        logLine(
+          msg.matched === false ? "err" : "in",
+          `Bout ${msg.finishedSegment}→${msg.currentSegment}` +
+            (msg.matched === false ? " (bruité, toléré ≤1.3)" : " OK")
+        );
         renderTrackMap();
+        break;
+      case "partCountSet":
+        state.track.partCount = msg.partCount;
+        if ($("mapPartCount")) $("mapPartCount").value = String(msg.partCount);
+        toast(`Course = ${msg.partCount} bouts`);
         break;
       case "mapStartSegment":
         state.track.startSegment = msg.startSegment ?? 0;
@@ -1788,12 +1804,23 @@
   $("btnMapStart").addEventListener("click", async () => {
     try {
       const id = requireSlot("A");
+      const partCount = Number($("mapPartCount").value) || 0;
+      if (partCount >= 3) {
+        await api("/api/track/part-count", {
+          method: "POST",
+          body: JSON.stringify({ partCount }),
+        });
+      }
       const data = await api("/api/track/mapping/start", {
         method: "POST",
         body: JSON.stringify({ vehicleId: id, cruiseSpeed: 450 }),
       });
       applyTrackSnapshot(data.track);
-      toast("Mapping: 2 tours (2ᵉ = mêmes mesures)");
+      toast(
+        partCount >= 3
+          ? `Mapping: ${partCount} bouts × 2 tours`
+          : "Mapping: 2 tours (fixe d’abord le nb de bouts si possible)"
+      );
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);
     }
@@ -1831,6 +1858,20 @@
       const data = await api("/api/track/race/stop", { method: "POST", body: "{}" });
       applyTrackSnapshot(data.track);
       toast("Course map stoppée");
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnPartCount").addEventListener("click", async () => {
+    try {
+      const partCount = Number($("mapPartCount").value) || 0;
+      const data = await api("/api/track/part-count", {
+        method: "POST",
+        body: JSON.stringify({ partCount }),
+      });
+      applyTrackSnapshot(data.track);
+      toast(`Nombre de bouts = ${data.partCount}`);
     } catch (err) {
       toast(err.message);
     }

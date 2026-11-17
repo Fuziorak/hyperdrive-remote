@@ -389,6 +389,16 @@ def api_track_segment_speed():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.post("/api/track/part-count")
+def api_track_part_count():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_part_count(int(data.get("partCount", data.get("count", 0))))
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.post("/api/track/race/start")
 def api_track_race_start():
     data = request.get_json(silent=True) or {}

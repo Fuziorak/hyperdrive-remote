@@ -21,8 +21,10 @@ Listener = Callable[[dict[str, Any]], None]
 
 # Approximate axle width for heading delta from wheel travel (cm-like units from lab).
 _AXLE = 48.0
-# Relative match: values may differ by ~10% (ratio ≤ 1.1), not 1:1 exact.
+# Mapping lap match: ~10%.
 _MATCH_RATIO = 1.1
+# Course: un bout peut varier jusqu'à ~30% et rester reconnu (ex. 1.3/1).
+_RACE_MATCH_RATIO = 1.3
 # Floor so tiny distances still match without exploding the ratio.
 _MATCH_ABS_FLOOR = 3.0
 _MIN_SEGMENTS = 3
@@ -72,19 +74,35 @@ def samples_match(a: dict[str, Any], b: dict[str, Any], ratio: float = _MATCH_RA
     return _value_close(a["left"], b["left"], ratio) and _value_close(a["right"], b["right"], ratio)
 
 
+def _close_loop_path(path: list[dict[str, float]]) -> list[dict[str, float]]:
+    """Redistribute end→start gap so the drawn parcours closes cleanly."""
+    if len(path) < 2:
+        return path
+    sx, sy = path[0]["x"], path[0]["y"]
+    ex, ey = path[-1]["x"], path[-1]["y"]
+    dx, dy = sx - ex, sy - ey
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return path
+    n = len(path) - 1
+    closed: list[dict[str, float]] = []
+    for i, p in enumerate(path):
+        t = 0.0 if n <= 0 else i / n
+        closed.append({"x": p["x"] + dx * t, "y": p["y"] + dy * t})
+    return closed
+
+
 def build_geometry(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
-    """Build per-segment meta + continuous path points for SVG drawing."""
+    """Build per-segment meta + continuous closed path for SVG drawing."""
     x, y, heading = 0.0, 0.0, -math.pi / 2  # start facing up on screen
     path: list[dict[str, float]] = [{"x": x, "y": y}]
-    out: list[dict[str, Any]] = []
+    ranges: list[tuple[int, int]] = []
+    meta: list[dict[str, Any]] = []
     for i, seg in enumerate(segments):
         left = float(seg["left"])
         right = float(seg["right"])
         length = max(segment_length(left, right), 1.0)
         d_head = heading_delta(left, right)
-        x0, y0 = x, y
-        seg_path = [{"x": x0, "y": y0}]
-        # March along an arc approximated by heading mid-step
+        start_idx = len(path) - 1
         steps = max(6, int(length / 4) or 6)
         for s in range(1, steps + 1):
             t = s / steps
@@ -92,11 +110,11 @@ def build_geometry(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
             step_len = length / steps
             x += math.cos(h) * step_len
             y += math.sin(h) * step_len
-            pt = {"x": round(x, 3), "y": round(y, 3)}
-            seg_path.append(pt)
-            path.append(pt)
+            path.append({"x": x, "y": y})
         heading += d_head
-        out.append(
+        end_idx = len(path) - 1
+        ranges.append((start_idx, end_idx))
+        meta.append(
             {
                 "id": i,
                 "left": left,
@@ -105,16 +123,31 @@ def build_geometry(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
                 "turn": classify_turn(left, right),
                 "headingDelta": round(d_head, 4),
                 "maxSpeed": int(seg.get("maxSpeed", 700)),
-                "x0": round(x0, 3),
-                "y0": round(y0, 3),
-                "x1": round(x, 3),
-                "y1": round(y, 3),
+            }
+        )
+
+    # Adapte la courbe pour que la fin rejoigne le début
+    path = _close_loop_path(path)
+    out: list[dict[str, Any]] = []
+    for (start_idx, end_idx), base in zip(ranges, meta):
+        seg_path = [
+            {"x": round(path[j]["x"], 3), "y": round(path[j]["y"], 3)}
+            for j in range(start_idx, end_idx + 1)
+        ]
+        out.append(
+            {
+                **base,
+                "x0": seg_path[0]["x"],
+                "y0": seg_path[0]["y"],
+                "x1": seg_path[-1]["x"],
+                "y1": seg_path[-1]["y"],
                 "path": seg_path,
             }
         )
-    # Close the loop visually toward the start point
     if path:
-        path.append({"x": path[0]["x"], "y": path[0]["y"]})
+        closed = [{"x": round(p["x"], 3), "y": round(p["y"], 3)} for p in path]
+        closed.append({"x": closed[0]["x"], "y": closed[0]["y"]})
+        path = closed
     return out, path
 
 
@@ -136,8 +169,14 @@ class TrackController:
         self.race_vehicle: str | None = None
         self.start_segment = 0
         self.current_segment = 0
+        self.part_count: int | None = None
         self.map: dict[str, Any] | None = self._load_map()
         self.course_name: str | None = (self.map or {}).get("name") if self.map else None
+        if self.map and self.map.get("partCount"):
+            try:
+                self.part_count = int(self.map["partCount"])
+            except Exception:
+                self.part_count = None
         self._restore_last_course()
 
     def _restore_last_course(self) -> None:
@@ -176,6 +215,8 @@ class TrackController:
             "lastSample": self._raw[-1] if self._raw else None,
             "courseName": self.course_name,
             "courses": self.list_courses(),
+            "partCount": self.part_count or ((self.map or {}).get("partCount")),
+            "raceMatchRatio": _RACE_MATCH_RATIO,
         }
 
     def _preview_map(self) -> dict[str, Any] | None:
@@ -187,9 +228,12 @@ class TrackController:
         segments, path = build_geometry(raw)
         xs = [p["x"] for p in path] if path else [0.0]
         ys = [p["y"] for p in path] if path else [0.0]
+        part_count = self.part_count or len(segments)
         return {
             "createdAt": time.time(),
             "segmentCount": len(segments),
+            "partCount": int(part_count),
+            "loopClosed": True,
             "segments": segments,
             "path": path,
             "draft": draft,
@@ -301,6 +345,8 @@ class TrackController:
         self.map = data
         self.course_name = data.get("name") or safe
         n = max(1, len(data["segments"]))
+        self.part_count = int(data.get("partCount") or n)
+        self.map["partCount"] = self.part_count
         self.start_segment = int(data.get("startSegment", 0)) % n
         self.current_segment = self.start_segment
         self._save_map()
@@ -382,6 +428,17 @@ class TrackController:
         self._save_map()
         self._emit({"type": "mapUpdated", "map": self.map})
         return {"ok": True, "map": self.map}
+
+    def set_part_count(self, count: int) -> dict[str, Any]:
+        n = max(3, min(64, int(count)))
+        self.part_count = n
+        if self.map:
+            self.map["partCount"] = n
+            self._save_map()
+            self._emit({"type": "mapUpdated", "map": self.map, "partCount": n})
+        else:
+            self._emit({"type": "partCountSet", "partCount": n})
+        return {"ok": True, "partCount": n}
 
     def start_race(self, vehicle_id: str) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):
@@ -469,13 +526,28 @@ class TrackController:
                     self._emit({"type": "mappingComplete", "map": self.map, "lapsDone": 2})
                 return
 
-            # Tour 1 : fermeture quand on retrouve la 1ʳᵉ mesure gardée
-            if len(self._raw) >= _MIN_SEGMENTS and samples_match(sample, self._raw[0]):
+            # Tour 1 : fermeture quand on retrouve la 1ʳᵉ mesure (et assez de bouts)
+            enough = len(self._raw) >= _MIN_SEGMENTS
+            if self.part_count:
+                enough = len(self._raw) >= self.part_count
+            if enough and samples_match(sample, self._raw[0]):
                 self._laps_done = 1
                 self._lap_len = len(self._raw)
                 self._verify_count = 1  # cette mesure = 1ʳᵉ du tour 2
                 self.current_segment = 0
                 self._emit(self._progress_event(vehicle_id, sample, matched=True))
+                return
+            # Si nombre de bouts fixé : ne pas dépasser pendant le tour 1
+            if self.part_count and len(self._raw) >= self.part_count:
+                self._emit(
+                    self._progress_event(
+                        vehicle_id,
+                        sample,
+                        matched=False,
+                        waitingClose=True,
+                        expected={"left": self._raw[0]["left"], "right": self._raw[0]["right"]},
+                    )
+                )
                 return
 
             sample["maxSpeed"] = 700
@@ -489,21 +561,38 @@ class TrackController:
             segs = self.map["segments"]
             if not segs:
                 return
-            self.current_segment = (self.current_segment + 1) % len(segs)
-            speed = int(segs[self.current_segment].get("maxSpeed", 700))
+            n = len(segs)
+            # La mesure correspond au bout qu'on vient de parcourir (= current)
+            finished_idx = self.current_segment % n
+            expected = segs[finished_idx]
+            matched = samples_match(sample, expected, ratio=_RACE_MATCH_RATIO)
+            # Même si un peu bruité (jusqu'à ~1.3), on avance au bout suivant
+            next_idx = (finished_idx + 1) % n
+            self.current_segment = next_idx
+            speed = int(segs[next_idx].get("maxSpeed", 700))
             self._emit(
                 {
                     "type": "mapPosition",
                     "vehicleId": vehicle_id,
                     "currentSegment": self.current_segment,
+                    "finishedSegment": finished_idx,
                     "startSegment": self.start_segment,
+                    "partCount": self.map.get("partCount") or n,
                     "targetSpeed": speed,
-                    "turn": segs[self.current_segment].get("turn"),
+                    "turn": segs[next_idx].get("turn"),
+                    "matched": matched,
+                    "matchRatio": _RACE_MATCH_RATIO,
+                    "sample": {"left": sample["left"], "right": sample["right"]},
+                    "expected": {"left": expected.get("left"), "right": expected.get("right")},
                 }
             )
 
     def _finalize_map(self) -> None:
+        if not self.part_count:
+            self.part_count = len(self._raw)
         self.map = self._map_from_raw(self._raw, draft=False)
+        self.map["partCount"] = int(self.part_count)
+        self.map["loopClosed"] = True
         self.start_segment = 0
         self.current_segment = 0
         self._save_map()
