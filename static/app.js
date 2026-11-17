@@ -1548,6 +1548,15 @@
         if ($("mapPartCount")) $("mapPartCount").value = String(msg.partCount);
         toast(`Course = ${msg.partCount} bouts`);
         break;
+      case "manualOverride": {
+        const stopped = (msg.stopped || []).join(", ");
+        state.track.raceActive = false;
+        state.track.mapping = false;
+        toast(stopped ? `Contrôle manuel · stop ${stopped}` : "Contrôle manuel");
+        logLine("ok", `Priorité cockpit (${stopped || "override"})`);
+        renderTrackMap();
+        break;
+      }
       case "mapStartSegment":
         state.track.startSegment = msg.startSegment ?? 0;
         state.track.currentSegment = msg.currentSegment ?? state.track.startSegment;

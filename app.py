@@ -63,6 +63,7 @@ def _broadcast(event: dict[str, Any]) -> None:
         "courseSaved",
         "courseLoaded",
         "courseDeleted",
+        "manualOverride",
     }:
         debug_log.info("event", f"broadcast {et}", event=event)
     elif et == "mqttOut":
@@ -245,12 +246,14 @@ def api_connect(vehicle_id: str):
 def api_speed(vehicle_id: str):
     data = request.get_json(silent=True) or {}
     try:
+        # Commandes UI cockpit = priorité sur l'automatisme course/map
         orch.set_speed(
             vehicle_id,
             velocity=int(data.get("velocity", 0)),
             acceleration=int(data.get("acceleration", 1000)),
+            manual=True,
         )
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "track": orch.track.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -265,8 +268,9 @@ def api_lane(vehicle_id: str):
             velocity=int(data.get("velocity", 300)),
             acceleration=int(data.get("acceleration", 800)),
             offset_from_center=data.get("offsetFromCenter"),
+            manual=True,
         )
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "track": orch.track.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -297,7 +301,7 @@ def api_lights(vehicle_id: str):
 def api_panic(vehicle_id: str):
     try:
         orch.panic_stop(vehicle_id)
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "track": orch.track.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 

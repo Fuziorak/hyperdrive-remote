@@ -464,6 +464,37 @@ class TrackController:
         self._emit({"type": "raceStopped", "vehicleId": vid})
         return {"ok": True}
 
+    def yield_to_manual(self, vehicle_id: str | None = None) -> dict[str, Any]:
+        """Le cockpit (STOP / vitesse / voie) a toujours priorité sur course/mapping/latence."""
+        vid_u = (vehicle_id or "").upper()
+        stopped: list[str] = []
+
+        if self.race_active and (not vid_u or (self.race_vehicle or "").upper() == vid_u):
+            self.race_active = False
+            self.race_vehicle = None
+            stopped.append("race")
+
+        if self.mapping and (not vid_u or (self.mapping_vehicle or "").upper() == vid_u):
+            self.mapping = False
+            self.mapping_vehicle = None
+            self._skip_first = False
+            stopped.append("mapping")
+
+        if self.latency_active and (not vid_u or (self.latency_vehicle or "").upper() == vid_u):
+            self.latency_active = False
+            self.latency_vehicle = None
+            stopped.append("latency")
+
+        if stopped:
+            self._emit(
+                {
+                    "type": "manualOverride",
+                    "vehicleId": vehicle_id,
+                    "stopped": stopped,
+                }
+            )
+        return {"ok": True, "stopped": stopped}
+
     def on_wheel_distance(self, vehicle_id: str, left: float, right: float, ts: Any = None) -> None:
         sample = {
             "left": float(left),

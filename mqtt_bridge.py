@@ -286,8 +286,20 @@ class MqttBridge:
             "payload": {"value": enable},
         })
 
-    def set_speed(self, vehicle_id: str, velocity: int, acceleration: int = 1000) -> None:
-        """Send speed once. Regular republish only if hold checkbox is enabled for this car."""
+    def set_speed(
+        self,
+        vehicle_id: str,
+        velocity: int,
+        acceleration: int = 1000,
+        *,
+        manual: bool = False,
+    ) -> None:
+        """Send speed once. Regular republish only if hold checkbox is enabled for this car.
+
+        manual=True (cockpit / STOP) coupe course map, mapping et latence pour ce véhicule.
+        """
+        if manual:
+            self.track.yield_to_manual(vehicle_id)
         self._remember(vehicle_id, velocity=velocity, acceleration=acceleration)
         self._publish_speed(vehicle_id, int(velocity), int(acceleration))
         # STOP / vitesse 0 → couper la republication si elle était active.
@@ -307,7 +319,11 @@ class MqttBridge:
         velocity: int = 300,
         acceleration: int = 800,
         offset_from_center: float | None = None,
+        *,
+        manual: bool = False,
     ) -> None:
+        if manual:
+            self.track.yield_to_manual(vehicle_id)
         payload: dict[str, Any] = {
             "velocity": int(velocity),
             "acceleration": int(acceleration),
@@ -360,7 +376,8 @@ class MqttBridge:
         self.set_lights(vehicle_id, lights)
 
     def panic_stop(self, vehicle_id: str) -> None:
-        self.set_speed(vehicle_id, 0, 2000)
+        # STOP cockpit = priorité absolue sur course / mapping / latence
+        self.set_speed(vehicle_id, 0, 2000, manual=True)
 
     def start_latency_test(self, vehicle_id: str, max_speed: int = 1000, accel: int = 2000) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
