@@ -400,6 +400,9 @@ body {
 }
 .map-slowdown-tools {
   margin-top: 0.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
 }
 .slowdown-label {
   display: flex;

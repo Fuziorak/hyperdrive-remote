@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261117o" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261117p" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -345,11 +345,22 @@
         </div>
         <div class="map-slowdown-tools">
           <label class="slowdown-label">
+            Vitesse lignes droites
+            <span class="slowdown-readout"><strong id="straightMaxValue">1000</strong></span>
+            <input id="straightMaxSlider" type="range" min="0" max="1000" step="10" value="1000" />
+          </label>
+          <label class="slowdown-label">
             Ralentissement virages
             <span class="slowdown-readout"><strong id="turnSlowdownValue">40</strong>% → virage ~<strong id="turnSlowdownSpeedHint">300</strong></span>
             <input id="turnSlowdownSlider" type="range" min="0" max="100" step="1" value="40" />
           </label>
-          <p class="hint">0% = 500 dans les virages · 100% = 0. Droits = vitesse max. Plus le virage est serré, plus c’est lent.</p>
+          <label class="slowdown-label">
+            Anticipation freinage
+            <span class="slowdown-readout"><strong id="lookaheadValue">1</strong> bout avant · force <strong id="brakeStrengthValue">100</strong>%</span>
+            <input id="lookaheadSlider" type="range" min="0" max="3" step="1" value="1" title="Nombre de bouts regardés en avance (0 = off)" />
+            <input id="brakeStrengthSlider" type="range" min="0" max="100" step="5" value="100" title="Force du freinage anticipé" />
+          </label>
+          <p class="hint">Droits = curseur ci-dessus. Virages : 0%→500 · 100%→0. Anticipation : freine déjà sur le bout précédent si la zone suivante est plus lente (les traits MQTT n’arrivent qu’en fin de zone).</p>
         </div>
         <div class="map-library">
           <div class="panel-head compact">
@@ -430,6 +441,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261117o"></script>
+  <script src="/static/app.js?v=20261117p"></script>
 </body>
 </html>

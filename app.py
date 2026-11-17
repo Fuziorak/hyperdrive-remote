@@ -443,6 +443,32 @@ def api_track_turn_slowdown():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.post("/api/track/straight-max")
+def api_track_straight_max():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_straight_max_speed(
+            int(data.get("speed", data.get("straightMaxSpeed", 1000)))
+        )
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/lookahead")
+def api_track_lookahead():
+    data = request.get_json(silent=True) or {}
+    try:
+        brake = data.get("brakePct", data.get("brakeStrength"))
+        out = orch.track.set_lookahead(
+            int(data.get("segments", data.get("lookaheadSegments", 1))),
+            brake_pct=float(brake) if brake is not None else None,
+        )
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.post("/api/track/race/start")
 def api_track_race_start():
     data = request.get_json(silent=True) or {}
