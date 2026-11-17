@@ -19,8 +19,10 @@ from typing import Any, Callable
 
 Listener = Callable[[dict[str, Any]], None]
 
-# Approximate axle width for heading delta from wheel travel (cm-like units from lab).
-_AXLE = 48.0
+# Voie / essieu effectif (plus petit = virages plus marqués sur le dessin).
+_AXLE = 22.0
+# Amplifie la courbure selon l'écart L/R des roues (évite les "droites presque plates").
+_CURVE_GAIN = 3.2
 # Mapping lap match: ~10%.
 _MATCH_RATIO = 1.1
 # Course: un bout peut varier jusqu'à ~30% et rester reconnu (ex. 1.3/1).
@@ -53,9 +55,37 @@ def segment_length(left: float, right: float) -> float:
     return max(0.0, (float(left) + float(right)) / 2.0)
 
 
-def heading_delta(left: float, right: float) -> float:
-    """Positive = turn right (clockwise if +Y forward)."""
-    return (float(left) - float(right)) / _AXLE
+def heading_delta(left: float, right: float, gain: float = _CURVE_GAIN) -> float:
+    """Positive = turn right (clockwise if +Y forward).
+
+    Agrandit la courbe selon l'écart de distance des roues (tours L/R),
+    pas seulement un petit (L-R)/essieu qui donnait des bouts quasi droits.
+    """
+    left_f = float(left)
+    right_f = float(right)
+    diff = left_f - right_f
+    avg = max((left_f + right_f) / 2.0, 1.0)
+    slip = abs(diff) / avg  # 0 = droit, ~0.3+ = virage net
+    # Base différentielle + gain + boost si les roues divergent beaucoup
+    delta = (diff / _AXLE) * float(gain) * (1.0 + 1.25 * slip)
+    # Évite les spins irréalistes sur un seul bout
+    return max(-math.pi * 0.95, min(math.pi * 0.95, delta))
+
+
+def _scale_headings_to_loop(deltas: list[float]) -> list[float]:
+    """Ajuste la rotation totale vers ±2π pour un vrai circuit fermé."""
+    if not deltas:
+        return deltas
+    total = sum(deltas)
+    if abs(total) < 0.15:
+        return deltas
+    turns = round(total / (2 * math.pi))
+    if turns == 0:
+        turns = 1 if total > 0 else -1
+    target = turns * 2 * math.pi
+    scale = target / total
+    scale = max(0.55, min(2.8, scale))
+    return [d * scale for d in deltas]
 
 
 def _value_close(x: float, y: float, ratio: float = _MATCH_RATIO, abs_floor: float = _MATCH_ABS_FLOOR) -> bool:
@@ -91,8 +121,16 @@ def _close_loop_path(path: list[dict[str, float]]) -> list[dict[str, float]]:
     return closed
 
 
-def build_geometry(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
-    """Build per-segment meta + continuous closed path for SVG drawing."""
+def build_geometry(
+    segments: list[dict[str, Any]],
+    *,
+    curve_gain: float = _CURVE_GAIN,
+) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
+    """Build per-segment arcs + continuous closed race-circuit path."""
+    gain = max(0.5, min(8.0, float(curve_gain)))
+    raw_deltas = [heading_delta(float(s["left"]), float(s["right"]), gain) for s in segments]
+    deltas = _scale_headings_to_loop(raw_deltas)
+
     x, y, heading = 0.0, 0.0, -math.pi / 2  # start facing up on screen
     path: list[dict[str, float]] = [{"x": x, "y": y}]
     ranges: list[tuple[int, int]] = []
@@ -101,12 +139,13 @@ def build_geometry(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
         left = float(seg["left"])
         right = float(seg["right"])
         length = max(segment_length(left, right), 1.0)
-        d_head = heading_delta(left, right)
+        d_head = deltas[i]
         start_idx = len(path) - 1
-        steps = max(6, int(length / 4) or 6)
+        # Plus de points sur les vrais virages
+        steps = max(10, int(length / 2.5) + int(abs(d_head) * 18))
         for s in range(1, steps + 1):
-            t = s / steps
-            h = heading + d_head * t
+            # Arc à courbure constante (pas une corde quasi droite)
+            h = heading + d_head * (s / steps)
             step_len = length / steps
             x += math.cos(h) * step_len
             y += math.sin(h) * step_len
@@ -122,11 +161,12 @@ def build_geometry(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
                 "length": round(length, 2),
                 "turn": classify_turn(left, right),
                 "headingDelta": round(d_head, 4),
+                "curveGain": round(gain, 3),
                 "maxSpeed": int(seg.get("maxSpeed", 700)),
             }
         )
 
-    # Adapte la courbe pour que la fin rejoigne le début
+    # Referme le parcours sur lui-même (début = fin)
     path = _close_loop_path(path)
     out: list[dict[str, Any]] = []
     for (start_idx, end_idx), base in zip(ranges, meta):
@@ -170,6 +210,7 @@ class TrackController:
         self.start_segment = 0
         self.current_segment = 0
         self.part_count: int | None = None
+        self.curve_gain: float = _CURVE_GAIN
         self.map: dict[str, Any] | None = self._load_map()
         self.course_name: str | None = (self.map or {}).get("name") if self.map else None
         if self.map and self.map.get("partCount"):
@@ -177,6 +218,11 @@ class TrackController:
                 self.part_count = int(self.map["partCount"])
             except Exception:
                 self.part_count = None
+        if self.map and self.map.get("curveGain"):
+            try:
+                self.curve_gain = float(self.map["curveGain"])
+            except Exception:
+                self.curve_gain = _CURVE_GAIN
         self._restore_last_course()
 
     def _restore_last_course(self) -> None:
@@ -216,6 +262,7 @@ class TrackController:
             "courseName": self.course_name,
             "courses": self.list_courses(),
             "partCount": self.part_count or ((self.map or {}).get("partCount")),
+            "curveGain": self.curve_gain,
             "raceMatchRatio": _RACE_MATCH_RATIO,
         }
 
@@ -225,7 +272,7 @@ class TrackController:
         return self._map_from_raw(self._raw, draft=True)
 
     def _map_from_raw(self, raw: list[dict[str, Any]], *, draft: bool = False) -> dict[str, Any]:
-        segments, path = build_geometry(raw)
+        segments, path = build_geometry(raw, curve_gain=self.curve_gain)
         xs = [p["x"] for p in path] if path else [0.0]
         ys = [p["y"] for p in path] if path else [0.0]
         part_count = self.part_count or len(segments)
@@ -233,6 +280,7 @@ class TrackController:
             "createdAt": time.time(),
             "segmentCount": len(segments),
             "partCount": int(part_count),
+            "curveGain": round(float(self.curve_gain), 3),
             "loopClosed": True,
             "segments": segments,
             "path": path,
@@ -244,6 +292,32 @@ class TrackController:
                 "maxY": max(ys),
             },
         }
+
+    def rebuild_geometry(self) -> dict[str, Any]:
+        """Recalcule le dessin (courbes amplifiées + boucle fermée) depuis les L/R."""
+        if not self.map or not self.map.get("segments"):
+            raise RuntimeError("Aucune map à redessiner")
+        raw = [
+            {
+                "left": s["left"],
+                "right": s["right"],
+                "maxSpeed": s.get("maxSpeed", 700),
+            }
+            for s in self.map["segments"]
+        ]
+        name = self.map.get("name")
+        start = self.map.get("startSegment", self.start_segment)
+        saved_at = self.map.get("savedAt")
+        rebuilt = self._map_from_raw(raw, draft=False)
+        if name:
+            rebuilt["name"] = name
+        if saved_at:
+            rebuilt["savedAt"] = saved_at
+        rebuilt["startSegment"] = start
+        self.map = rebuilt
+        self._save_map()
+        self._emit({"type": "mapUpdated", "map": self.map, "curveGain": self.curve_gain})
+        return {"ok": True, "map": self.map}
 
     def _progress_event(self, vehicle_id: str, sample: dict[str, Any], **extra: Any) -> dict[str, Any]:
         preview = self._preview_map()
@@ -324,6 +398,11 @@ class TrackController:
             raise RuntimeError("Fichier map invalide (pas de segments)")
         # Rebuild path drawing if older save lacks it
         if not data.get("path") and data.get("segments"):
+            if data.get("curveGain") is not None:
+                try:
+                    self.curve_gain = float(data["curveGain"])
+                except Exception:
+                    pass
             rebuilt = self._map_from_raw(
                 [
                     {
@@ -439,6 +518,18 @@ class TrackController:
         else:
             self._emit({"type": "partCountSet", "partCount": n})
         return {"ok": True, "partCount": n}
+
+    def set_curve_gain(self, gain: float, *, rebuild: bool = True) -> dict[str, Any]:
+        self.curve_gain = max(0.5, min(8.0, float(gain)))
+        if self.map:
+            self.map["curveGain"] = self.curve_gain
+            if rebuild and self.map.get("segments"):
+                return self.rebuild_geometry()
+            self._save_map()
+            self._emit({"type": "mapUpdated", "map": self.map, "curveGain": self.curve_gain})
+        else:
+            self._emit({"type": "curveGainSet", "curveGain": self.curve_gain})
+        return {"ok": True, "curveGain": self.curve_gain}
 
     def start_race(self, vehicle_id: str) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):

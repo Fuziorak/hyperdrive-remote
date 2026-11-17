@@ -86,6 +86,7 @@
       courseName: null,
       courses: [],
       partCount: null,
+      curveGain: 3.2,
     },
   };
 
@@ -219,8 +220,12 @@
     state.track.courseName = track.courseName || null;
     state.track.courses = track.courses || [];
     state.track.partCount = track.partCount || track.map?.partCount || null;
+    state.track.curveGain = track.curveGain ?? track.map?.curveGain ?? state.track.curveGain;
     if (state.track.partCount && $("mapPartCount")) {
       $("mapPartCount").value = String(state.track.partCount);
+    }
+    if ($("mapCurveGain") && state.track.curveGain != null) {
+      $("mapCurveGain").value = String(state.track.curveGain);
     }
     renderCourseSelect();
     renderTrackMap();
@@ -1881,6 +1886,30 @@
       });
       applyTrackSnapshot(data.track);
       toast(`Nombre de bouts = ${data.partCount}`);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnCurveGain").addEventListener("click", async () => {
+    try {
+      const curveGain = Number($("mapCurveGain").value) || 3.2;
+      const data = await api("/api/track/curve-gain", {
+        method: "POST",
+        body: JSON.stringify({ curveGain, rebuild: true }),
+      });
+      applyTrackSnapshot(data.track);
+      toast(`Courbes ×${data.curveGain ?? curveGain} · circuit recalculé`);
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnRebuildMap").addEventListener("click", async () => {
+    try {
+      const data = await api("/api/track/rebuild", { method: "POST", body: "{}" });
+      applyTrackSnapshot(data.track);
+      toast("Circuit refermé (début = fin)");
     } catch (err) {
       toast(err.message);
     }

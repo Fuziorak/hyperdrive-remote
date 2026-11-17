@@ -392,7 +392,14 @@ body {
   gap: 0.5rem;
   align-items: end;
 }
+.map-curve-tools {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  align-items: end;
+}
 .map-seg-tools label,
+.map-curve-tools label,
 .map-course-tools label {
   display: flex;
   flex-direction: column;
@@ -882,7 +889,7 @@ input[type="range"] {
   .fleet-panel, .race-panel, .profiles-panel { grid-column: auto; }
 }
 @media (max-width: 900px) {
-  .layout, .form-grid, .control-grid, .telemetry, .lights-grid, .manual-add, .profile-save, .race-mini, .map-seg-tools, .map-course-tools {
+  .layout, .form-grid, .control-grid, .telemetry, .lights-grid, .manual-add, .profile-save, .race-mini, .map-seg-tools, .map-curve-tools, .map-course-tools {
     grid-template-columns: 1fr;
   }
   .card-block.span-2 { grid-column: auto; }

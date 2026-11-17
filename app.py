@@ -403,6 +403,28 @@ def api_track_part_count():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.post("/api/track/curve-gain")
+def api_track_curve_gain():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_curve_gain(
+            float(data.get("curveGain", data.get("gain", 3.2))),
+            rebuild=bool(data.get("rebuild", True)),
+        )
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/rebuild")
+def api_track_rebuild():
+    try:
+        out = orch.track.rebuild_geometry()
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.post("/api/track/race/start")
 def api_track_race_start():
     data = request.get_json(silent=True) or {}
