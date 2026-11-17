@@ -1699,6 +1699,9 @@
         toast(`Frein anticipé · seg ${msg.segmentIndex} → ${msg.brakeSpeed}`);
         logLine("ok", `Frein ${brakeFractionLabel(msg.brakeAtFraction)} → ${msg.brakeSpeed}`);
         break;
+      case "raceLights":
+        logLine("ok", `Feux course · ${msg.preset || "?"}`);
+        break;
       case "mapStartSegment":
         state.track.startSegment = msg.startSegment ?? 0;
         state.track.currentSegment = msg.currentSegment ?? state.track.startSegment;

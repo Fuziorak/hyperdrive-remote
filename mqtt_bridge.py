@@ -70,6 +70,8 @@ class MqttBridge:
         self._reconnect_pending = False
         self.track = TrackController(self._emit)
         self._race_brake_timer: threading.Timer | None = None
+        self._race_last_cmd_speed: int | None = None
+        self._race_light_mode: str | None = None
         self._start_watchdog()
 
     # ----- public API used by app.py -----
@@ -300,8 +302,11 @@ class MqttBridge:
         manual=True (cockpit / STOP) coupe course map, mapping et latence pour ce véhicule.
         """
         if manual:
-            self.track.yield_to_manual(vehicle_id)
+            yielded = self.track.yield_to_manual(vehicle_id)
             self._cancel_race_brake()
+            if "race" in (yielded.get("stopped") or []):
+                self._race_last_cmd_speed = None
+                self._race_light_mode = None
         self._remember(vehicle_id, velocity=velocity, acceleration=acceleration)
         self._publish_speed(vehicle_id, int(velocity), int(acceleration))
         # STOP / vitesse 0 → couper la republication si elle était active.
@@ -317,6 +322,41 @@ class MqttBridge:
             except Exception:
                 pass
 
+    def _set_race_lights(self, vehicle_id: str, mode: str) -> None:
+        """Feux course : Queue flash au frein, Strobe à l'accélération."""
+        mode_l = (mode or "").lower()
+        if mode_l not in {"tailflash", "strobe", "off"}:
+            return
+        if self._race_light_mode == mode_l:
+            return
+        self._race_light_mode = mode_l
+        try:
+            self.apply_light_preset(vehicle_id, mode_l)
+            self._emit(
+                {
+                    "type": "raceLights",
+                    "vehicleId": vehicle_id,
+                    "preset": "tailFlash" if mode_l == "tailflash" else mode_l,
+                }
+            )
+        except Exception as exc:
+            debug_log.warn("mqtt", "race lights failed", error=str(exc), preset=mode_l)
+
+    def _race_lights_for_speed_change(self, vehicle_id: str, new_speed: int) -> None:
+        prev = self._race_last_cmd_speed
+        self._race_last_cmd_speed = int(new_speed)
+        if prev is None:
+            # Départ course : si on part vite → strobe, sinon feux frein discrets
+            if int(new_speed) >= 400:
+                self._set_race_lights(vehicle_id, "strobe")
+            elif int(new_speed) > 0:
+                self._set_race_lights(vehicle_id, "tailflash")
+            return
+        if int(new_speed) > int(prev) + 15:
+            self._set_race_lights(vehicle_id, "strobe")
+        elif int(new_speed) < int(prev) - 15:
+            self._set_race_lights(vehicle_id, "tailflash")
+
     def _apply_race_plan(self, vehicle_id: str, plan: dict[str, Any] | None) -> None:
         """Plein gaz en entrée de bout, puis frein programmé à 2/3 ou 3/4 du droit."""
         self._cancel_race_brake()
@@ -327,6 +367,7 @@ class MqttBridge:
         delay_ms = plan.get("brakeAfterMs")
         seg_idx = int(plan.get("segmentIndex", -1))
         self.set_speed(vehicle_id, entry, 1400, manual=False)
+        self._race_lights_for_speed_change(vehicle_id, entry)
         if not delay_ms or brake >= entry:
             return
 
@@ -339,6 +380,7 @@ class MqttBridge:
                 if (self.track.race_vehicle or "").upper() != str(vehicle_id).upper():
                     return
                 self.set_speed(vehicle_id, brake, 2000, manual=False)
+                self._race_lights_for_speed_change(vehicle_id, brake)
                 self._emit(
                     {
                         "type": "raceBrakeApplied",
@@ -481,6 +523,8 @@ class MqttBridge:
 
     def start_mapped_race(self, vehicle_id: str) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
+        self._race_last_cmd_speed = None
+        self._race_light_mode = None
         out = self.track.start_race(vehicle_id)
         self._apply_race_plan(vehicle_id, out.get("plan") or self.track.race_speed_plan())
         return out
@@ -489,11 +533,19 @@ class MqttBridge:
         vid = self.track.race_vehicle
         self._cancel_race_brake()
         out = self.track.stop_race()
+        self._race_last_cmd_speed = None
         if vid:
+            try:
+                self._set_race_lights(vid, "off")
+            except Exception:
+                pass
+            self._race_light_mode = None
             try:
                 self.panic_stop(vid)
             except Exception:
                 pass
+        else:
+            self._race_light_mode = None
         return out
 
     def assert_control(self, vehicle_id: str) -> dict[str, Any]:
