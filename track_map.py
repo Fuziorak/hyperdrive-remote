@@ -4,7 +4,8 @@ Track mapping from Anki wheelDistance traits.
 wheelDistance value: { left, right } — distance since previous trait.
 right < left → turn toward the right (right wheel travelled less).
 First sample after starting mapping is discarded (not trait→trait).
-Lap closes when a later sample matches the first kept sample.
+Needs 2 full laps: lap 1 builds the segment list; lap 2 must repeat
+each measure identically (within tolerance) before the map is finalized.
 """
 
 from __future__ import annotations
@@ -92,6 +93,9 @@ class TrackController:
         self.mapping_vehicle: str | None = None
         self._skip_first = False
         self._raw: list[dict[str, Any]] = []
+        self._laps_done = 0
+        self._lap_len = 0
+        self._verify_count = 0
         self.latency_active = False
         self.latency_vehicle: str | None = None
         self.latency_started_at = 0.0
@@ -107,6 +111,9 @@ class TrackController:
             "mapping": self.mapping,
             "mappingVehicle": self.mapping_vehicle,
             "rawCount": len(self._raw),
+            "lapsDone": self._laps_done,
+            "lapsRequired": 2,
+            "verifyCount": self._verify_count,
             "latencyActive": self.latency_active,
             "latencyResult": self.latency_result,
             "raceActive": self.race_active,
@@ -143,7 +150,10 @@ class TrackController:
         self.mapping_vehicle = vehicle_id
         self._skip_first = True
         self._raw = []
-        self._emit({"type": "mappingStarted", "vehicleId": vehicle_id})
+        self._laps_done = 0
+        self._lap_len = 0
+        self._verify_count = 0
+        self._emit({"type": "mappingStarted", "vehicleId": vehicle_id, "lapsRequired": 2})
         return {"ok": True, "vehicleId": vehicle_id}
 
     def stop_mapping(self, finalize: bool = False) -> dict[str, Any]:
@@ -241,13 +251,55 @@ class TrackController:
                 self._skip_first = False
                 self._emit({"type": "mappingSkippedFirst", "vehicleId": vehicle_id})
                 return
-            # Lap closed: current sample matches first kept segment
-            if len(self._raw) >= _MIN_SEGMENTS and samples_match(sample, self._raw[0]):
-                self.mapping = False
-                self.mapping_vehicle = None
-                self._finalize_map()
-                self._emit({"type": "mappingComplete", "map": self.map})
+
+            # Tour 2 : chaque mesure doit refrapper celle du tour 1
+            if self._laps_done >= 1 and self._lap_len > 0:
+                expected = self._raw[self._verify_count % self._lap_len]
+                matched = samples_match(sample, expected)
+                if matched:
+                    self._verify_count += 1
+                self._emit(
+                    {
+                        "type": "mappingProgress",
+                        "vehicleId": vehicle_id,
+                        "count": len(self._raw),
+                        "lapsDone": self._laps_done,
+                        "lapsRequired": 2,
+                        "verifyCount": self._verify_count,
+                        "lapLen": self._lap_len,
+                        "matched": matched,
+                        "sample": sample,
+                        "expected": {"left": expected["left"], "right": expected["right"]},
+                    }
+                )
+                if self._verify_count >= self._lap_len:
+                    self._laps_done = 2
+                    self.mapping = False
+                    self.mapping_vehicle = None
+                    self._finalize_map()
+                    self._emit({"type": "mappingComplete", "map": self.map, "lapsDone": 2})
                 return
+
+            # Tour 1 : fermeture quand on retrouve la 1ʳᵉ mesure gardée
+            if len(self._raw) >= _MIN_SEGMENTS and samples_match(sample, self._raw[0]):
+                self._laps_done = 1
+                self._lap_len = len(self._raw)
+                self._verify_count = 1  # cette mesure = 1ʳᵉ du tour 2
+                self._emit(
+                    {
+                        "type": "mappingProgress",
+                        "vehicleId": vehicle_id,
+                        "count": len(self._raw),
+                        "lapsDone": 1,
+                        "lapsRequired": 2,
+                        "verifyCount": self._verify_count,
+                        "lapLen": self._lap_len,
+                        "matched": True,
+                        "sample": sample,
+                    }
+                )
+                return
+
             sample["maxSpeed"] = 700
             self._raw.append(sample)
             self._emit(
@@ -255,6 +307,8 @@ class TrackController:
                     "type": "mappingProgress",
                     "vehicleId": vehicle_id,
                     "count": len(self._raw),
+                    "lapsDone": 0,
+                    "lapsRequired": 2,
                     "sample": sample,
                 }
             )

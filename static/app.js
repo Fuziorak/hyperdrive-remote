@@ -78,6 +78,9 @@
       map: null,
       latencyResult: null,
       rawCount: 0,
+      lapsDone: 0,
+      lapsRequired: 2,
+      verifyCount: 0,
     },
   };
 
@@ -203,6 +206,9 @@
     state.track.map = track.map || null;
     state.track.latencyResult = track.latencyResult || null;
     state.track.rawCount = track.rawCount || 0;
+    state.track.lapsDone = track.lapsDone || 0;
+    state.track.lapsRequired = track.lapsRequired || 2;
+    state.track.verifyCount = track.verifyCount || 0;
     renderTrackMap();
   }
 
@@ -235,7 +241,13 @@
     const segs = map?.segments || [];
 
     if (state.track.mapping) {
-      status.textContent = `Mapping en cours… ${state.track.rawCount} segments (1ʳᵉ mesure ignorée)`;
+      const lap = Math.min(state.track.lapsDone + 1, state.track.lapsRequired || 2);
+      const need = state.track.lapsRequired || 2;
+      if (state.track.lapsDone >= 1) {
+        status.textContent = `Mapping tour ${lap}/${need} · vérif ${state.track.verifyCount}/${state.track.rawCount}`;
+      } else {
+        status.textContent = `Mapping tour ${lap}/${need} · ${state.track.rawCount} segments (1ʳᵉ mesure ignorée)`;
+      }
     } else if (state.track.raceActive) {
       status.textContent = `Course map · segment ${state.track.currentSegment}`;
     } else if (segs.length) {
@@ -1352,12 +1364,21 @@
         break;
       case "mappingProgress":
         state.track.rawCount = msg.count || 0;
+        state.track.lapsDone = msg.lapsDone ?? state.track.lapsDone;
+        state.track.lapsRequired = msg.lapsRequired ?? 2;
+        state.track.verifyCount = msg.verifyCount ?? state.track.verifyCount;
+        if (msg.lapsDone === 1 && msg.verifyCount === 1) {
+          toast("Tour 1 OK — 2ᵉ tour de vérification…");
+        } else if (msg.matched === false) {
+          logLine("err", "Mapping: mesure tour 2 ≠ tour 1 (on attend la suivante)");
+        }
         renderTrackMap();
         break;
       case "mappingComplete":
         state.track.mapping = false;
+        state.track.lapsDone = 2;
         state.track.map = msg.map || null;
-        toast("Tour mappé — map prête");
+        toast("2 tours OK — map prête");
         renderTrackMap();
         break;
       case "mappingStopped":
@@ -1631,7 +1652,7 @@
         body: JSON.stringify({ vehicleId: id, cruiseSpeed: 450 }),
       });
       applyTrackSnapshot(data.track);
-      toast("Mapping: tour complet jusqu’à répétition");
+      toast("Mapping: 2 tours (2ᵉ = mêmes mesures)");
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);
     }
