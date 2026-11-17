@@ -394,7 +394,7 @@ body {
 }
 .map-curve-tools {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto;
   gap: 0.5rem;
   align-items: end;
 }

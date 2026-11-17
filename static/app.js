@@ -314,7 +314,9 @@
       status.textContent = `Course map · segment ${state.track.currentSegment}`;
     } else if (segs.length) {
       const cname = state.track.courseName ? ` · ${state.track.courseName}` : "";
-      status.textContent = `Dessin prêt${cname} · ${segs.length} segments · clic = départ`;
+      const gain = map?.curveGain != null ? ` · gain ${map.curveGain}` : "";
+      const cross = map?.noCrossing === false ? " · croisement!" : "";
+      status.textContent = `Circuit prêt${cname}${gain}${cross} · ${segs.length} bouts · clic = départ`;
     } else {
       status.textContent = "Aucune map — lance un mapping ou charge une course sauvée";
     }
@@ -1886,25 +1888,22 @@
     }
   });
 
-  $("btnCurveGain").addEventListener("click", async () => {
-    try {
-      const curveGain = Number($("mapCurveGain").value) || 3.2;
-      const data = await api("/api/track/curve-gain", {
-        method: "POST",
-        body: JSON.stringify({ curveGain, rebuild: true }),
-      });
-      applyTrackSnapshot(data.track);
-      toast(`Courbes ×${data.curveGain ?? curveGain} · circuit recalculé`);
-    } catch (err) {
-      toast(err.message);
-    }
-  });
-
   $("btnRebuildMap").addEventListener("click", async () => {
     try {
+      const partCount = Math.max(1, Math.min(50, Number($("mapPartCount").value) || 1));
+      await api("/api/track/part-count", {
+        method: "POST",
+        body: JSON.stringify({ partCount }),
+      });
       const data = await api("/api/track/rebuild", { method: "POST", body: "{}" });
       applyTrackSnapshot(data.track);
-      toast("Circuit refermé (début = fin)");
+      const g = data.track?.curveGain ?? data.map?.curveGain;
+      const ok = data.track?.map?.noCrossing !== false;
+      toast(
+        ok
+          ? `Circuit auto · gain ${g} · sans croisement`
+          : `Circuit recalculé · gain ${g}`
+      );
     } catch (err) {
       toast(err.message);
     }

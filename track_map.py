@@ -73,19 +73,144 @@ def heading_delta(left: float, right: float, gain: float = _CURVE_GAIN) -> float
 
 
 def _scale_headings_to_loop(deltas: list[float]) -> list[float]:
-    """Ajuste la rotation totale vers ±2π pour un vrai circuit fermé."""
+    """Force exactement un tour (±2π) : circuit simple, un seul chemin sans croisement."""
     if not deltas:
         return deltas
     total = sum(deltas)
-    if abs(total) < 0.15:
-        return deltas
-    turns = round(total / (2 * math.pi))
-    if turns == 0:
-        turns = 1 if total > 0 else -1
-    target = turns * 2 * math.pi
+    if abs(total) < 1e-6:
+        # Pas de virage mesuré : petite rotation uniforme pour pouvoir fermer
+        n = len(deltas)
+        return [2 * math.pi / n] * n
+    target = math.copysign(2 * math.pi, total)
     scale = target / total
-    scale = max(0.55, min(2.8, scale))
+    scale = max(0.35, min(3.5, scale))
     return [d * scale for d in deltas]
+
+
+def _seg_intersect(
+    a: dict[str, float],
+    b: dict[str, float],
+    c: dict[str, float],
+    d: dict[str, float],
+) -> bool:
+    """Intersection propre (pas seulement un sommet partagé)."""
+    ax, ay, bx, by = a["x"], a["y"], b["x"], b["y"]
+    cx, cy, dx, dy = c["x"], c["y"], d["x"], d["y"]
+
+    def cross(ox: float, oy: float, px: float, py: float, qx: float, qy: float) -> float:
+        return (px - ox) * (qy - oy) - (py - oy) * (qx - ox)
+
+    d1 = cross(cx, cy, dx, dy, ax, ay)
+    d2 = cross(cx, cy, dx, dy, bx, by)
+    d3 = cross(ax, ay, bx, by, cx, cy)
+    d4 = cross(ax, ay, bx, by, dx, dy)
+    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+        return True
+    return False
+
+
+def _path_self_intersects(path: list[dict[str, float]]) -> bool:
+    """True si le tracé se croise (interdit : un seul chemin bout à bout)."""
+    if len(path) < 4:
+        return False
+    pts = path[:-1] if (abs(path[0]["x"] - path[-1]["x"]) < 1e-6 and abs(path[0]["y"] - path[-1]["y"]) < 1e-6) else path
+    n = len(pts)
+    if n < 4:
+        return False
+    edges = [(pts[i], pts[(i + 1) % n]) for i in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            # ignorer arêtes adjacentes / partageant un sommet
+            if abs(i - j) <= 1 or (i == 0 and j == n - 1):
+                continue
+            if _seg_intersect(edges[i][0], edges[i][1], edges[j][0], edges[j][1]):
+                return True
+    return False
+
+
+def _path_area(path: list[dict[str, float]]) -> float:
+    pts = path[:-1] if path and abs(path[0]["x"] - path[-1]["x"]) < 1e-6 and abs(path[0]["y"] - path[-1]["y"]) < 1e-6 else path
+    if len(pts) < 3:
+        return 0.0
+    area = 0.0
+    for i in range(len(pts)):
+        j = (i + 1) % len(pts)
+        area += pts[i]["x"] * pts[j]["y"] - pts[j]["x"] * pts[i]["y"]
+    return abs(area) * 0.5
+
+
+def _open_path_gap(path: list[dict[str, float]]) -> float:
+    if len(path) < 2:
+        return 0.0
+    dx = path[0]["x"] - path[-1]["x"]
+    dy = path[0]["y"] - path[-1]["y"]
+    return math.hypot(dx, dy)
+
+
+def _seed_curve_gain(segments: list[dict[str, Any]], part_count: int) -> float:
+    """Heuristique initiale selon nb de bouts et écarts L/R moyens."""
+    n = max(1, int(part_count) or len(segments) or 1)
+    slips: list[float] = []
+    for s in segments:
+        left = float(s["left"])
+        right = float(s["right"])
+        avg = max((left + right) / 2.0, 1.0)
+        slips.append(abs(left - right) / avg)
+    mean_slip = sum(slips) / max(len(slips), 1)
+    # Peu de bouts / gros écarts → gain plus bas ; beaucoup de bouts / petits écarts → gain plus haut
+    gain = (2.4 / max(mean_slip, 0.08)) * (8.0 / max(n, 1)) ** 0.35
+    return max(0.7, min(5.5, gain))
+
+
+def optimize_curve_gain(
+    segments: list[dict[str, Any]],
+    part_count: int | None = None,
+) -> tuple[float, dict[str, Any]]:
+    """Choisit le gain qui ferme un circuit simple sans croisement."""
+    n = int(part_count or len(segments) or 1)
+    seed = _seed_curve_gain(segments, n)
+    candidates = []
+    g = 0.6
+    while g <= 5.8:
+        candidates.append(round(g, 2))
+        g += 0.12
+    # densifier autour du seed
+    for dg in (-0.4, -0.2, 0.0, 0.2, 0.4, 0.6):
+        candidates.append(round(max(0.6, min(5.8, seed + dg)), 2))
+    candidates = sorted(set(candidates))
+
+    best_gain = seed
+    best_score = -1e18
+    best_meta: dict[str, Any] = {"crossed": True}
+    for gain in candidates:
+        _segs, path = build_geometry(segments, curve_gain=gain, close_loop=False)
+        gap = _open_path_gap(path)
+        closed = _close_loop_path(list(path))
+        if closed:
+            closed = closed + [dict(closed[0])]
+        crossed = _path_self_intersects(closed)
+        area = _path_area(closed)
+        # Score : pas de croisement obligatoire, puis petit gap, aire confortable
+        score = 0.0
+        if crossed:
+            score -= 5000.0
+        else:
+            score += 2000.0
+        score -= gap * 4.0
+        score += math.sqrt(max(area, 1.0)) * 0.35
+        # Pénalise les gains extrêmes loin du seed
+        score -= abs(gain - seed) * 15.0
+        if score > best_score:
+            best_score = score
+            best_gain = gain
+            best_meta = {
+                "crossed": crossed,
+                "gap": round(gap, 2),
+                "area": round(area, 1),
+                "seed": round(seed, 3),
+                "partCount": n,
+            }
+    return best_gain, best_meta
 
 
 def _value_close(x: float, y: float, ratio: float = _MATCH_RATIO, abs_floor: float = _MATCH_ABS_FLOOR) -> bool:
@@ -125,8 +250,9 @@ def build_geometry(
     segments: list[dict[str, Any]],
     *,
     curve_gain: float = _CURVE_GAIN,
+    close_loop: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
-    """Build per-segment arcs + continuous closed race-circuit path."""
+    """Build per-segment arcs + continuous race-circuit path (simple, no cross)."""
     gain = max(0.5, min(8.0, float(curve_gain)))
     raw_deltas = [heading_delta(float(s["left"]), float(s["right"]), gain) for s in segments]
     deltas = _scale_headings_to_loop(raw_deltas)
@@ -141,10 +267,8 @@ def build_geometry(
         length = max(segment_length(left, right), 1.0)
         d_head = deltas[i]
         start_idx = len(path) - 1
-        # Plus de points sur les vrais virages
         steps = max(10, int(length / 2.5) + int(abs(d_head) * 18))
         for s in range(1, steps + 1):
-            # Arc à courbure constante (pas une corde quasi droite)
             h = heading + d_head * (s / steps)
             step_len = length / steps
             x += math.cos(h) * step_len
@@ -166,8 +290,8 @@ def build_geometry(
             }
         )
 
-    # Referme le parcours sur lui-même (début = fin)
-    path = _close_loop_path(path)
+    if close_loop:
+        path = _close_loop_path(path)
     out: list[dict[str, Any]] = []
     for (start_idx, end_idx), base in zip(ranges, meta):
         seg_path = [
@@ -184,10 +308,12 @@ def build_geometry(
                 "path": seg_path,
             }
         )
-    if path:
+    if close_loop and path:
         closed = [{"x": round(p["x"], 3), "y": round(p["y"], 3)} for p in path]
         closed.append({"x": closed[0]["x"], "y": closed[0]["y"]})
         path = closed
+    elif path:
+        path = [{"x": round(p["x"], 3), "y": round(p["y"], 3)} for p in path]
     return out, path
 
 
@@ -272,16 +398,34 @@ class TrackController:
         return self._map_from_raw(self._raw, draft=True)
 
     def _map_from_raw(self, raw: list[dict[str, Any]], *, draft: bool = False) -> dict[str, Any]:
-        segments, path = build_geometry(raw, curve_gain=self.curve_gain)
+        part_count = int(self.part_count or len(raw) or 1)
+        # Pendant le mapping (draft) : heuristique rapide. À la finalisation : optimisation.
+        if draft:
+            self.curve_gain = _seed_curve_gain(raw, part_count)
+            opt_meta = {"crossed": False, "seed": round(self.curve_gain, 3), "draft": True}
+        else:
+            gain, opt_meta = optimize_curve_gain(raw, part_count)
+            self.curve_gain = gain
+        segments, path = build_geometry(raw, curve_gain=self.curve_gain, close_loop=True)
+        # Si encore croisé, retente avec gains plus bas
+        if _path_self_intersects(path):
+            for g in (self.curve_gain * 0.75, self.curve_gain * 0.55, 1.0, 0.8):
+                segments, path = build_geometry(raw, curve_gain=g, close_loop=True)
+                if not _path_self_intersects(path):
+                    self.curve_gain = g
+                    opt_meta = {**opt_meta, "crossed": False, "fallbackGain": round(g, 3)}
+                    break
         xs = [p["x"] for p in path] if path else [0.0]
         ys = [p["y"] for p in path] if path else [0.0]
-        part_count = self.part_count or len(segments)
         return {
             "createdAt": time.time(),
             "segmentCount": len(segments),
             "partCount": int(part_count),
             "curveGain": round(float(self.curve_gain), 3),
+            "curveGainAuto": True,
             "loopClosed": True,
+            "noCrossing": not _path_self_intersects(path),
+            "optimize": opt_meta,
             "segments": segments,
             "path": path,
             "draft": draft,
@@ -511,20 +655,52 @@ class TrackController:
     def set_part_count(self, count: int) -> dict[str, Any]:
         n = max(1, min(50, int(count)))
         self.part_count = n
-        if self.map:
+        if self.map and self.map.get("segments"):
             self.map["partCount"] = n
-            self._save_map()
-            self._emit({"type": "mapUpdated", "map": self.map, "partCount": n})
-        else:
-            self._emit({"type": "partCountSet", "partCount": n})
+            # Recalcule le gain optimal pour ce nombre de bouts
+            out = self.rebuild_geometry()
+            out["partCount"] = n
+            return out
+        self._emit({"type": "partCountSet", "partCount": n})
         return {"ok": True, "partCount": n}
 
     def set_curve_gain(self, gain: float, *, rebuild: bool = True) -> dict[str, Any]:
+        """Override manuel optionnel ; sinon le gain est calculé auto via rebuild_geometry."""
         self.curve_gain = max(0.5, min(8.0, float(gain)))
         if self.map:
             self.map["curveGain"] = self.curve_gain
+            self.map["curveGainAuto"] = False
             if rebuild and self.map.get("segments"):
-                return self.rebuild_geometry()
+                raw = [
+                    {"left": s["left"], "right": s["right"], "maxSpeed": s.get("maxSpeed", 700)}
+                    for s in self.map["segments"]
+                ]
+                # Rebuild with forced manual gain (skip auto optimize once)
+                segments, path = build_geometry(raw, curve_gain=self.curve_gain, close_loop=True)
+                name = self.map.get("name")
+                start = self.map.get("startSegment", self.start_segment)
+                self.map = {
+                    **self.map,
+                    "segments": segments,
+                    "path": path,
+                    "segmentCount": len(segments),
+                    "curveGain": round(self.curve_gain, 3),
+                    "curveGainAuto": False,
+                    "loopClosed": True,
+                    "noCrossing": not _path_self_intersects(path),
+                    "bounds": {
+                        "minX": min(p["x"] for p in path),
+                        "maxX": max(p["x"] for p in path),
+                        "minY": min(p["y"] for p in path),
+                        "maxY": max(p["y"] for p in path),
+                    },
+                }
+                if name:
+                    self.map["name"] = name
+                self.map["startSegment"] = start
+                self._save_map()
+                self._emit({"type": "mapUpdated", "map": self.map, "curveGain": self.curve_gain})
+                return {"ok": True, "map": self.map, "curveGain": self.curve_gain}
             self._save_map()
             self._emit({"type": "mapUpdated", "map": self.map, "curveGain": self.curve_gain})
         else:
