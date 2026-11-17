@@ -629,11 +629,13 @@ class MqttBridge:
         if not client or not self._connected:
             return
         # Avoid Anki/Vehicles/U/+/S/# global flood (battery Hz) — selective topics only.
+        # Chemin lab: Anki/Vehicles/U/{id}/E/wheelDistance
         patterns = [
             f"Anki/Vehicles/U/{vehicle_id}/S/online",
             f"Anki/Vehicles/U/{vehicle_id}/S/status",
             f"Anki/Vehicles/U/{vehicle_id}/S/onTrack",
             f"Anki/Vehicles/U/{vehicle_id}/S/battery/level",
+            f"Anki/Vehicles/U/{vehicle_id}/E/wheelDistance",
             f"Anki/Vehicles/U/{vehicle_id}/E/#",
         ]
         for t in patterns:
@@ -690,6 +692,8 @@ class MqttBridge:
             "Anki/Hosts/U/+/E/vehicle/discovered/+",
             "Anki/Vehicles/U/+/S/online",
             "Anki/Vehicles/U/+/S/status",
+            # Toujours écouter les traits roues (mapping / latence / course)
+            "Anki/Vehicles/U/+/E/wheelDistance",
         ]
 
     def _apply_subscriptions(self, client: mqtt.Client) -> None:
@@ -783,14 +787,22 @@ class MqttBridge:
             self._upsert_vehicle(vid, model=model, rssi=rssi, announce=True)
             return
 
-        # Any traffic under Anki/Vehicles/U/{vehicleId}/… ⇒ vehicle exists
-        if len(parts) >= 4 and parts[0] == "Anki" and parts[1] == "Vehicles" and parts[2] == "U":
+        # Chemin: Anki/Vehicles/U/{vehicleId}/… (MQTT Explorer: Anki → Vehicles → U → id → E → wheelDistance)
+        vehicles_branch = parts[1].lower() if len(parts) > 1 else ""
+        if (
+            len(parts) >= 4
+            and parts[0] == "Anki"
+            and vehicles_branch in {"vehicles", "vehicules"}
+            and parts[2] == "U"
+        ):
             vid = parts[3]
             if not vid or vid in {"I", "D"}:
                 return
             self._upsert_vehicle(vid)
             leaf = parts[-1]
             parent = parts[-2] if len(parts) >= 2 else ""
+            # Exact: …/E/wheelDistance
+            is_wheel_distance = leaf == "wheelDistance" and parent == "E"
             val = payload.get("value") if isinstance(payload, dict) else None
             changed = False
             snap: dict[str, Any] | None = None
@@ -828,7 +840,7 @@ class MqttBridge:
                     if isinstance(val, (int, float)):
                         v["rssi"] = int(val)
                         changed = True
-                elif leaf == "wheelDistance":
+                elif is_wheel_distance:
                     left = right = None
                     candidates = [val]
                     if isinstance(payload, dict):
@@ -851,6 +863,7 @@ class MqttBridge:
                             debug_log.info(
                                 "mqtt",
                                 "wheelDistance",
+                                topic=f"Anki/Vehicles/U/{vid}/E/wheelDistance",
                                 vehicleId=vid,
                                 left=left,
                                 right=right,
@@ -859,9 +872,19 @@ class MqttBridge:
                 snap = dict(v)
             # wheelDistance handled outside lock (may set_speed for race / latency stop)
             if wd is not None:
-                pending_latency = self.track.latency_active and self.track.latency_vehicle == vid
-                was_mapping = self.track.mapping and self.track.mapping_vehicle == vid
-                in_race = self.track.race_active and self.track.race_vehicle == vid
+                vid_u = vid.upper()
+                pending_latency = (
+                    self.track.latency_active
+                    and (self.track.latency_vehicle or "").upper() == vid_u
+                )
+                was_mapping = (
+                    self.track.mapping
+                    and (self.track.mapping_vehicle or "").upper() == vid_u
+                )
+                in_race = (
+                    self.track.race_active
+                    and (self.track.race_vehicle or "").upper() == vid_u
+                )
                 self.track.on_wheel_distance(wd[0], wd[1], wd[2], wd[3])
                 if pending_latency and self.track.latency_result:
                     try:
