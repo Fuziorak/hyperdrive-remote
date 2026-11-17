@@ -33,8 +33,12 @@ _MIN_SEGMENTS = 3
 # Course auto : droits réglables, virages selon curseur de ralentissement.
 _STRAIGHT_MAX_SPEED = 1000
 _CURVE_SPEED_AT_0 = 500  # 0% ralentissement → 500 dans les virages ; 100% → 0
-# Anticipation : freiner N bouts avant une zone plus lente (traits = frontières).
+# Anticipation : regarder N bouts suivants pour la cible de freinage.
 _DEFAULT_LOOKAHEAD = 1
+# Freinage à une fraction du droit (temps estimé / mesuré entre traits).
+_DEFAULT_BRAKE_AT = 0.75  # 3/4 du chemin
+# Conversion empirique longueur_map → temps : length / (speed * scale) secondes.
+_DIST_PER_SPEED_PER_SEC = 0.07
 _MAPS_DIR = Path(__file__).resolve().parent / "maps"
 _MAP_PATH = _MAPS_DIR / "track.json"
 _COURSES_DIR = _MAPS_DIR / "courses"
@@ -267,21 +271,14 @@ def race_speed_for_segment(
     return int(max(0, min(1000, round(speed))))
 
 
-def race_speed_with_lookahead(
+def _upcoming_min_speed(
     segments: list[dict[str, Any]],
     index: int,
     slowdown_pct: float,
     *,
-    straight_max: int = _STRAIGHT_MAX_SPEED,
-    lookahead: int = _DEFAULT_LOOKAHEAD,
-    brake_strength: float = 1.0,
+    straight_max: int,
+    lookahead: int,
 ) -> int:
-    """Vitesse du bout courant, déjà freinée si un prochain bout est plus lent.
-
-    Les traits MQTT n'arrivent qu'en fin de zone : pour anticiper un virage,
-    on applique (en tout ou partie) la cible du/des bouts suivants dès l'entrée
-    dans le bout actuel.
-    """
     if not segments:
         return 0
     n = len(segments)
@@ -290,21 +287,83 @@ def race_speed_with_lookahead(
         segments[idx], slowdown_pct, straight_max=straight_max
     )
     look = max(0, min(3, int(lookahead)))
-    strength = max(0.0, min(1.0, float(brake_strength)))
-    if look <= 0 or strength <= 0:
+    if look <= 0:
         return current
-
     upcoming = current
     for k in range(1, look + 1):
         sp = race_speed_for_segment(
             segments[(idx + k) % n], slowdown_pct, straight_max=straight_max
         )
         upcoming = min(upcoming, sp)
+    return int(upcoming)
 
-    if upcoming >= current:
-        return current
-    blended = current + (upcoming - current) * strength
-    return int(max(0, min(1000, round(blended))))
+
+def estimate_travel_ms(length: float, speed: int, measured_ms: float | None = None) -> float:
+    """Durée estimée pour parcourir un bout (ms). Préfère le temps mesuré au tour précédent."""
+    if measured_ms is not None and measured_ms > 60:
+        return float(measured_ms)
+    rate = max(float(speed), 1.0) * _DIST_PER_SPEED_PER_SEC
+    return 1000.0 * max(float(length), 1.0) / rate
+
+
+def race_speed_plan(
+    segments: list[dict[str, Any]],
+    index: int,
+    slowdown_pct: float,
+    *,
+    straight_max: int = _STRAIGHT_MAX_SPEED,
+    lookahead: int = _DEFAULT_LOOKAHEAD,
+    brake_at_fraction: float = _DEFAULT_BRAKE_AT,
+    measured_ms: float | None = None,
+) -> dict[str, Any]:
+    """Plan de vitesse pour un bout : plein gaz puis frein à 2/3 ou 3/4 du droit.
+
+    Les traits MQTT ne donnent pas la position continue : on estime le temps de
+    parcours (mesuré si possible) et on programme le freinage à la fraction.
+    """
+    if not segments:
+        return {
+            "segmentIndex": 0,
+            "entrySpeed": 0,
+            "brakeSpeed": 0,
+            "brakeAfterMs": None,
+            "length": 0.0,
+            "isStraight": False,
+        }
+    n = len(segments)
+    idx = int(index) % n
+    seg = segments[idx]
+    left = float(seg.get("left", 0))
+    right = float(seg.get("right", 0))
+    turn = seg.get("turn") or classify_turn(left, right)
+    tight = turn_tightness(left, right)
+    is_straight = turn == "straight" and tight < 0.12
+    length = segment_length(left, right)
+    entry = race_speed_for_segment(seg, slowdown_pct, straight_max=straight_max)
+    upcoming = _upcoming_min_speed(
+        segments,
+        idx,
+        slowdown_pct,
+        straight_max=straight_max,
+        lookahead=lookahead,
+    )
+    brake_to = min(entry, upcoming)
+    frac = max(0.0, min(0.95, float(brake_at_fraction)))
+    brake_after: int | None = None
+    if is_straight and frac > 0 and brake_to < entry:
+        total_ms = estimate_travel_ms(length, entry, measured_ms)
+        # Laisse une marge avant la fin du bout (réaction / imprécision)
+        brake_after = int(max(80, min(total_ms * 0.92, total_ms * frac)))
+    return {
+        "segmentIndex": idx,
+        "entrySpeed": int(entry),
+        "brakeSpeed": int(brake_to),
+        "brakeAfterMs": brake_after,
+        "length": round(length, 2),
+        "isStraight": is_straight,
+        "estimatedTravelMs": int(estimate_travel_ms(length, entry, measured_ms)),
+        "brakeAtFraction": frac,
+    }
 
 
 def _close_loop_path(path: list[dict[str, float]]) -> list[dict[str, float]]:
@@ -419,7 +478,9 @@ class TrackController:
         self.turn_slowdown_pct: float = 40.0  # % freinage virages (0=500, 100=0)
         self.straight_max_speed: int = _STRAIGHT_MAX_SPEED
         self.lookahead_segments: int = _DEFAULT_LOOKAHEAD  # 0=off, 1–3 bouts d’avance
-        self.brake_strength: float = 1.0  # 0=ignore prochaine zone, 1=frein plein
+        self.brake_at_fraction: float = _DEFAULT_BRAKE_AT  # 0=off, ~0.67=2/3, ~0.75=3/4
+        self._seg_entered_at: float | None = None
+        self._seg_travel_ms: dict[int, float] = {}
         self.map: dict[str, Any] | None = self._load_map()
         self.course_name: str | None = (self.map or {}).get("name") if self.map else None
         if self.map and self.map.get("partCount"):
@@ -475,7 +536,7 @@ class TrackController:
             "turnSlowdownPct": self.turn_slowdown_pct,
             "straightMaxSpeed": self.straight_max_speed,
             "lookaheadSegments": self.lookahead_segments,
-            "brakeStrength": round(self.brake_strength * 100.0, 1),
+            "brakeAtFraction": self.brake_at_fraction,
             "raceMatchRatio": _RACE_MATCH_RATIO,
         }
 
@@ -870,35 +931,53 @@ class TrackController:
         )
         return {"ok": True, "straightMaxSpeed": self.straight_max_speed}
 
-    def set_lookahead(self, segments: int, brake_pct: float | None = None) -> dict[str, Any]:
+    def set_lookahead(
+        self,
+        segments: int,
+        brake_at_fraction: float | None = None,
+    ) -> dict[str, Any]:
         self.lookahead_segments = max(0, min(3, int(segments)))
-        if brake_pct is not None:
-            self.brake_strength = max(0.0, min(100.0, float(brake_pct))) / 100.0
+        if brake_at_fraction is not None:
+            self.brake_at_fraction = max(0.0, min(0.95, float(brake_at_fraction)))
         self._emit(
             {
                 "type": "lookaheadSet",
                 "lookaheadSegments": self.lookahead_segments,
-                "brakeStrength": round(self.brake_strength * 100.0, 1),
+                "brakeAtFraction": self.brake_at_fraction,
             }
         )
         return {
             "ok": True,
             "lookaheadSegments": self.lookahead_segments,
-            "brakeStrength": round(self.brake_strength * 100.0, 1),
+            "brakeAtFraction": self.brake_at_fraction,
         }
 
-    def target_speed_for_segment(self, index: int) -> int:
+    def race_speed_plan(self, index: int | None = None) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):
-            return 0
+            return {
+                "segmentIndex": 0,
+                "entrySpeed": 0,
+                "brakeSpeed": 0,
+                "brakeAfterMs": None,
+                "length": 0.0,
+                "isStraight": False,
+            }
         segs = self.map["segments"]
-        return race_speed_with_lookahead(
+        idx = self.current_segment if index is None else int(index)
+        measured = self._seg_travel_ms.get(int(idx) % len(segs))
+        return race_speed_plan(
             segs,
-            int(index),
+            idx,
             self.turn_slowdown_pct,
             straight_max=self.straight_max_speed,
             lookahead=self.lookahead_segments,
-            brake_strength=self.brake_strength,
+            brake_at_fraction=self.brake_at_fraction,
+            measured_ms=measured,
         )
+
+    def target_speed_for_segment(self, index: int) -> int:
+        """Vitesse d’entrée du bout (plein droit ; le frein mi-parcours est dans le plan)."""
+        return int(self.race_speed_plan(index).get("entrySpeed") or 0)
 
     def start_race(self, vehicle_id: str) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):
@@ -906,33 +985,39 @@ class TrackController:
         self.race_active = True
         self.race_vehicle = vehicle_id
         self.current_segment = self.start_segment
-        speed = self.target_speed_for_segment(self.current_segment)
+        self._seg_entered_at = time.time()
+        plan = self.race_speed_plan(self.current_segment)
         seg = self.map["segments"][self.current_segment]
         self._emit(
             {
                 "type": "raceStarted",
                 "vehicleId": vehicle_id,
                 "currentSegment": self.current_segment,
-                "targetSpeed": speed,
+                "targetSpeed": plan["entrySpeed"],
+                "plan": plan,
                 "turn": seg.get("turn"),
                 "turnSlowdownPct": self.turn_slowdown_pct,
                 "straightMaxSpeed": self.straight_max_speed,
                 "lookaheadSegments": self.lookahead_segments,
+                "brakeAtFraction": self.brake_at_fraction,
             }
         )
         return {
             "ok": True,
             "currentSegment": self.current_segment,
-            "targetSpeed": speed,
+            "targetSpeed": plan["entrySpeed"],
+            "plan": plan,
             "turnSlowdownPct": self.turn_slowdown_pct,
             "straightMaxSpeed": self.straight_max_speed,
             "lookaheadSegments": self.lookahead_segments,
+            "brakeAtFraction": self.brake_at_fraction,
         }
 
     def stop_race(self) -> dict[str, Any]:
         self.race_active = False
         vid = self.race_vehicle
         self.race_vehicle = None
+        self._seg_entered_at = None
         self._emit({"type": "raceStopped", "vehicleId": vid})
         return {"ok": True}
 
@@ -944,6 +1029,7 @@ class TrackController:
         if self.race_active and (not vid_u or (self.race_vehicle or "").upper() == vid_u):
             self.race_active = False
             self.race_vehicle = None
+            self._seg_entered_at = None
             stopped.append("race")
 
         if self.mapping and (not vid_u or (self.mapping_vehicle or "").upper() == vid_u):
@@ -1071,10 +1157,19 @@ class TrackController:
             finished_idx = self.current_segment % n
             expected = segs[finished_idx]
             matched = samples_match(sample, expected, ratio=_RACE_MATCH_RATIO)
+            now = time.time()
+            if self._seg_entered_at is not None:
+                traveled = max(0.0, (now - self._seg_entered_at) * 1000.0)
+                # Lissage léger si on a déjà une mesure pour ce bout
+                prev = self._seg_travel_ms.get(finished_idx)
+                if prev is not None and prev > 60:
+                    traveled = 0.65 * prev + 0.35 * traveled
+                self._seg_travel_ms[finished_idx] = traveled
             # Même si un peu bruité (jusqu'à ~1.3), on avance au bout suivant
             next_idx = (finished_idx + 1) % n
             self.current_segment = next_idx
-            speed = self.target_speed_for_segment(next_idx)
+            self._seg_entered_at = now
+            plan = self.race_speed_plan(next_idx)
             nxt = segs[next_idx]
             self._emit(
                 {
@@ -1084,12 +1179,14 @@ class TrackController:
                     "finishedSegment": finished_idx,
                     "startSegment": self.start_segment,
                     "partCount": self.map.get("partCount") or n,
-                    "targetSpeed": speed,
+                    "targetSpeed": plan["entrySpeed"],
+                    "plan": plan,
                     "turn": nxt.get("turn"),
                     "tightness": round(turn_tightness(nxt.get("left", 0), nxt.get("right", 0)), 3),
                     "turnSlowdownPct": self.turn_slowdown_pct,
                     "straightMaxSpeed": self.straight_max_speed,
                     "lookaheadSegments": self.lookahead_segments,
+                    "brakeAtFraction": self.brake_at_fraction,
                     "matched": matched,
                     "matchRatio": _RACE_MATCH_RATIO,
                     "sample": {"left": sample["left"], "right": sample["right"]},

@@ -90,13 +90,28 @@
       turnSlowdownPct: 40,
       straightMaxSpeed: 1000,
       lookaheadSegments: 1,
-      brakeStrength: 100,
+      brakeAtFraction: 0.75,
     },
   };
 
   function curveSpeedHint(pct) {
     const p = Math.max(0, Math.min(100, Number(pct) || 0)) / 100;
     return Math.round(500 * (1 - p));
+  }
+
+  function brakeFractionLabel(frac) {
+    const f = Number(frac) || 0;
+    if (f <= 0) return "off";
+    if (Math.abs(f - 2 / 3) < 0.04 || Math.abs(f - 0.6667) < 0.04) return "2/3";
+    if (Math.abs(f - 0.75) < 0.04) return "3/4";
+    return `${Math.round(f * 100)}%`;
+  }
+
+  function nearestBrakeFractionOption(frac) {
+    const f = Number(frac) || 0;
+    if (f <= 0.05) return "0";
+    if (Math.abs(f - 0.75) <= Math.abs(f - 2 / 3)) return "0.75";
+    return "0.6667";
   }
 
   function syncTurnSlowdownUI(pct) {
@@ -114,15 +129,15 @@
     if ($("straightMaxValue")) $("straightMaxValue").textContent = String(v);
   }
 
-  function syncLookaheadUI(segments, brakePct) {
+  function syncLookaheadUI(segments, brakeAtFraction) {
     const look = Math.max(0, Math.min(3, Number(segments) ?? 1));
-    const brake = Math.max(0, Math.min(100, Number(brakePct) ?? 100));
+    const frac = Math.max(0, Math.min(0.95, Number(brakeAtFraction) ?? 0.75));
     state.track.lookaheadSegments = look;
-    state.track.brakeStrength = brake;
+    state.track.brakeAtFraction = frac;
     if ($("lookaheadSlider")) $("lookaheadSlider").value = String(look);
     if ($("lookaheadValue")) $("lookaheadValue").textContent = String(look);
-    if ($("brakeStrengthSlider")) $("brakeStrengthSlider").value = String(brake);
-    if ($("brakeStrengthValue")) $("brakeStrengthValue").textContent = String(brake);
+    if ($("brakeFractionSelect")) $("brakeFractionSelect").value = nearestBrakeFractionOption(frac);
+    if ($("brakeFractionLabel")) $("brakeFractionLabel").textContent = brakeFractionLabel(frac);
   }
 
   const $ = (id) => document.getElementById(id);
@@ -271,10 +286,10 @@
     }
     if (track.turnSlowdownPct != null) syncTurnSlowdownUI(track.turnSlowdownPct);
     if (track.straightMaxSpeed != null) syncStraightMaxUI(track.straightMaxSpeed);
-    if (track.lookaheadSegments != null || track.brakeStrength != null) {
+    if (track.lookaheadSegments != null || track.brakeAtFraction != null) {
       syncLookaheadUI(
         track.lookaheadSegments ?? state.track.lookaheadSegments,
-        track.brakeStrength ?? state.track.brakeStrength
+        track.brakeAtFraction ?? state.track.brakeAtFraction
       );
     }
     renderCourseSelect();
@@ -1677,8 +1692,12 @@
       case "lookaheadSet":
         syncLookaheadUI(
           msg.lookaheadSegments ?? state.track.lookaheadSegments,
-          msg.brakeStrength ?? state.track.brakeStrength
+          msg.brakeAtFraction ?? state.track.brakeAtFraction
         );
+        break;
+      case "raceBrakeApplied":
+        toast(`Frein anticipé · seg ${msg.segmentIndex} → ${msg.brakeSpeed}`);
+        logLine("ok", `Frein ${brakeFractionLabel(msg.brakeAtFraction)} → ${msg.brakeSpeed}`);
         break;
       case "mapStartSegment":
         state.track.startSegment = msg.startSegment ?? 0;
@@ -2043,14 +2062,14 @@
   let _lookaheadTimer = null;
   function pushLookahead() {
     const segments = Number($("lookaheadSlider").value) || 0;
-    const brakePct = Number($("brakeStrengthSlider").value) || 0;
-    syncLookaheadUI(segments, brakePct);
+    const brakeAtFraction = Number($("brakeFractionSelect").value) || 0;
+    syncLookaheadUI(segments, brakeAtFraction);
     clearTimeout(_lookaheadTimer);
     _lookaheadTimer = setTimeout(async () => {
       try {
         const data = await api("/api/track/lookahead", {
           method: "POST",
-          body: JSON.stringify({ segments, brakePct }),
+          body: JSON.stringify({ segments, brakeAtFraction }),
         });
         applyTrackSnapshot(data.track);
       } catch (err) {
@@ -2059,7 +2078,7 @@
     }, 180);
   }
   $("lookaheadSlider").addEventListener("input", pushLookahead);
-  $("brakeStrengthSlider").addEventListener("input", pushLookahead);
+  $("brakeFractionSelect").addEventListener("change", pushLookahead);
 
   $("btnLaunchRace").addEventListener("click", async () => {
     try {
@@ -2071,7 +2090,7 @@
       const pct = Number($("turnSlowdownSlider").value) || 0;
       const straight = Number($("straightMaxSlider").value) || 0;
       const look = Number($("lookaheadSlider").value) || 0;
-      const brakePct = Number($("brakeStrengthSlider").value) || 0;
+      const brakeAtFraction = Number($("brakeFractionSelect").value) || 0;
       await api("/api/track/turn-slowdown", {
         method: "POST",
         body: JSON.stringify({ pct }),
@@ -2082,7 +2101,7 @@
       });
       await api("/api/track/lookahead", {
         method: "POST",
-        body: JSON.stringify({ segments: look, brakePct }),
+        body: JSON.stringify({ segments: look, brakeAtFraction }),
       });
       const id = requireSlot("A");
       const data = await api("/api/track/race/start", {
@@ -2092,7 +2111,7 @@
       applyTrackSnapshot(data.track);
       $("raceMapPicker").hidden = true;
       toast(
-        `Course · droits ${straight} · virages ~${curveSpeedHint(pct)} · anti ${look} bout`
+        `Course · droits ${straight} · frein ${brakeFractionLabel(brakeAtFraction)} · virages ~${curveSpeedHint(pct)}`
       );
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);

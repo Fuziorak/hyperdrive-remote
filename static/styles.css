@@ -415,9 +415,17 @@ body {
   color: var(--text);
   font-size: 0.85rem;
 }
-.slowdown-label input[type="range"] {
+.slowdown-label input[type="range"],
+.slowdown-label select {
   width: 100%;
   accent-color: var(--amber);
+}
+.slowdown-label select {
+  padding: 0.35rem 0.45rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel) 88%, #000);
+  color: var(--text);
 }
 .map-seg-tools label,
 .map-curve-tools label,

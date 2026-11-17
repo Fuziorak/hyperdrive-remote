@@ -459,10 +459,20 @@ def api_track_straight_max():
 def api_track_lookahead():
     data = request.get_json(silent=True) or {}
     try:
-        brake = data.get("brakePct", data.get("brakeStrength"))
+        frac = data.get("brakeAtFraction", data.get("fraction"))
+        # Compat : anciennes UIs envoyaient brakePct 0–100 comme « force »
+        if frac is None and data.get("brakePct") is not None:
+            pct = float(data.get("brakePct"))
+            # 67 → 2/3, 75 → 3/4, 0 → off ; autres valeurs /100 si ≤ 1 déjà traité
+            if pct in (0, 67, 75):
+                frac = {0: 0.0, 67: 2 / 3, 75: 0.75}[int(pct)]
+            elif pct > 1:
+                frac = pct / 100.0
+            else:
+                frac = pct
         out = orch.track.set_lookahead(
             int(data.get("segments", data.get("lookaheadSegments", 1))),
-            brake_pct=float(brake) if brake is not None else None,
+            brake_at_fraction=float(frac) if frac is not None else None,
         )
         return jsonify({**out, "track": orch.track.snapshot()})
     except Exception as exc:

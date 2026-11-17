@@ -69,6 +69,7 @@ class MqttBridge:
         self._reconnect_failures = 0
         self._reconnect_pending = False
         self.track = TrackController(self._emit)
+        self._race_brake_timer: threading.Timer | None = None
         self._start_watchdog()
 
     # ----- public API used by app.py -----
@@ -300,11 +301,61 @@ class MqttBridge:
         """
         if manual:
             self.track.yield_to_manual(vehicle_id)
+            self._cancel_race_brake()
         self._remember(vehicle_id, velocity=velocity, acceleration=acceleration)
         self._publish_speed(vehicle_id, int(velocity), int(acceleration))
         # STOP / vitesse 0 → couper la republication si elle était active.
         if int(velocity) <= 0 and self._hold_enabled.get(vehicle_id):
             self.set_hold(vehicle_id, False)
+
+    def _cancel_race_brake(self) -> None:
+        timer = self._race_brake_timer
+        self._race_brake_timer = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+    def _apply_race_plan(self, vehicle_id: str, plan: dict[str, Any] | None) -> None:
+        """Plein gaz en entrée de bout, puis frein programmé à 2/3 ou 3/4 du droit."""
+        self._cancel_race_brake()
+        if not plan:
+            return
+        entry = int(plan.get("entrySpeed") or 0)
+        brake = int(plan.get("brakeSpeed") or entry)
+        delay_ms = plan.get("brakeAfterMs")
+        seg_idx = int(plan.get("segmentIndex", -1))
+        self.set_speed(vehicle_id, entry, 1400, manual=False)
+        if not delay_ms or brake >= entry:
+            return
+
+        def _fire() -> None:
+            try:
+                if not self.track.race_active:
+                    return
+                if int(self.track.current_segment) != seg_idx:
+                    return
+                if (self.track.race_vehicle or "").upper() != str(vehicle_id).upper():
+                    return
+                self.set_speed(vehicle_id, brake, 2000, manual=False)
+                self._emit(
+                    {
+                        "type": "raceBrakeApplied",
+                        "vehicleId": vehicle_id,
+                        "segmentIndex": seg_idx,
+                        "brakeSpeed": brake,
+                        "brakeAfterMs": delay_ms,
+                        "brakeAtFraction": plan.get("brakeAtFraction"),
+                    }
+                )
+            except Exception as exc:
+                debug_log.warn("mqtt", "race mid-brake failed", error=str(exc))
+
+        timer = threading.Timer(float(delay_ms) / 1000.0, _fire)
+        timer.daemon = True
+        self._race_brake_timer = timer
+        timer.start()
 
     def _publish_speed(self, vehicle_id: str, velocity: int, acceleration: int) -> None:
         self._publish(f"Anki/Vehicles/U/{vehicle_id}/I/{self.caller_id}", {
@@ -431,11 +482,12 @@ class MqttBridge:
     def start_mapped_race(self, vehicle_id: str) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
         out = self.track.start_race(vehicle_id)
-        self.set_speed(vehicle_id, int(out["targetSpeed"]), 1400)
+        self._apply_race_plan(vehicle_id, out.get("plan") or self.track.race_speed_plan())
         return out
 
     def stop_mapped_race(self) -> dict[str, Any]:
         vid = self.track.race_vehicle
+        self._cancel_race_brake()
         out = self.track.stop_race()
         if vid:
             try:
@@ -944,8 +996,7 @@ class MqttBridge:
                     try:
                         segs = (self.track.map or {}).get("segments") or []
                         if segs:
-                            spd = self.track.target_speed_for_segment(self.track.current_segment)
-                            self.set_speed(vid, spd, 1400)
+                            self._apply_race_plan(vid, self.track.race_speed_plan())
                     except Exception as exc:
                         debug_log.warn("mqtt", "race speed apply failed", error=str(exc))
             if changed and snap is not None and leaf in {
