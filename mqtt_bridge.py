@@ -538,6 +538,11 @@ class MqttBridge:
                 payload = json.loads(msg.payload.decode("utf-8"))
             except Exception:
                 payload = {"raw": msg.payload.decode("utf-8", errors="replace")}
+            # MQTT Explorer history looks like a list; live msgs are objects.
+            if isinstance(payload, list):
+                payload = payload[-1] if payload else {}
+            if not isinstance(payload, dict):
+                payload = {"value": payload}
             # Do not flood UI/debug with every battery tick — route only.
             self._route(msg.topic, payload)
 
@@ -825,9 +830,14 @@ class MqttBridge:
                         changed = True
                 elif leaf == "wheelDistance":
                     left = right = None
-                    if isinstance(val, dict):
-                        left = val.get("left")
-                        right = val.get("right")
+                    candidates = [val]
+                    if isinstance(payload, dict):
+                        candidates.extend([payload.get("payload"), payload])
+                    for cand in candidates:
+                        if isinstance(cand, dict) and cand.get("left") is not None and cand.get("right") is not None:
+                            left = cand.get("left")
+                            right = cand.get("right")
+                            break
                     if left is not None and right is not None:
                         v["wheelDistance"] = {"left": left, "right": right}
                         changed = True
@@ -837,6 +847,15 @@ class MqttBridge:
                             float(right),
                             payload.get("timestamp") if isinstance(payload, dict) else None,
                         )
+                        if self.track.mapping or self.track.latency_active or self.track.race_active:
+                            debug_log.info(
+                                "mqtt",
+                                "wheelDistance",
+                                vehicleId=vid,
+                                left=left,
+                                right=right,
+                                mapping=self.track.mapping,
+                            )
                 snap = dict(v)
             # wheelDistance handled outside lock (may set_speed for race / latency stop)
             if wd is not None:

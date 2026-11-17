@@ -76,6 +76,8 @@
       startSegment: 0,
       currentSegment: 0,
       map: null,
+      preview: null,
+      lastSample: null,
       latencyResult: null,
       rawCount: 0,
       lapsDone: 0,
@@ -204,12 +206,20 @@
     state.track.startSegment = track.startSegment ?? 0;
     state.track.currentSegment = track.currentSegment ?? 0;
     state.track.map = track.map || null;
+    state.track.preview = track.preview || null;
     state.track.latencyResult = track.latencyResult || null;
     state.track.rawCount = track.rawCount || 0;
     state.track.lapsDone = track.lapsDone || 0;
     state.track.lapsRequired = track.lapsRequired || 2;
     state.track.verifyCount = track.verifyCount || 0;
+    state.track.lastSample = track.lastSample || null;
     renderTrackMap();
+  }
+
+  function activeTrackMap() {
+    // Pendant le mapping, n'afficher que la preview live (pas l'ancienne map).
+    if (state.track.mapping) return state.track.preview;
+    return state.track.map;
   }
 
   function mapProject(x, y, bounds, pad = 28) {
@@ -237,16 +247,18 @@
     const latLabel = $("mapLatencyLabel");
     const g = $("mapSegments");
     const car = $("mapCar");
-    const map = state.track.map;
+    const map = activeTrackMap();
     const segs = map?.segments || [];
+    const ls = state.track.lastSample;
 
     if (state.track.mapping) {
       const lap = Math.min(state.track.lapsDone + 1, state.track.lapsRequired || 2);
       const need = state.track.lapsRequired || 2;
+      const sampleTxt = ls ? ` · L/R ${ls.left}/${ls.right}` : "";
       if (state.track.lapsDone >= 1) {
-        status.textContent = `Mapping tour ${lap}/${need} · vérif ${state.track.verifyCount}/${state.track.rawCount}`;
+        status.textContent = `Mapping tour ${lap}/${need} · vérif ${state.track.verifyCount}/${state.track.rawCount}${sampleTxt}`;
       } else {
-        status.textContent = `Mapping tour ${lap}/${need} · ${state.track.rawCount} segments (1ʳᵉ mesure ignorée)`;
+        status.textContent = `Mapping tour ${lap}/${need} · ${state.track.rawCount} segments${sampleTxt}`;
       }
     } else if (state.track.raceActive) {
       status.textContent = `Course map · segment ${state.track.currentSegment}`;
@@ -256,7 +268,7 @@
       status.textContent = "Aucune map — lance un mapping depuis la piste A";
     }
 
-    startLabel.textContent = segs.length ? String(state.track.startSegment) : "—";
+    startLabel.textContent = segs.length && !state.track.mapping ? String(state.track.startSegment) : (segs.length ? "…" : "—");
     posLabel.textContent = segs.length ? String(state.track.currentSegment) : "—";
     if (state.track.latencyResult) {
       latLabel.textContent = `${state.track.latencyResult.elapsedMs} ms`;
@@ -273,6 +285,7 @@
     }
 
     const bounds = map.bounds || {};
+    const highlightId = state.track.currentSegment;
     segs.forEach((seg) => {
       const p0 = mapProject(seg.x0, seg.y0, bounds);
       const p1 = mapProject(seg.x1, seg.y1, bounds);
@@ -283,22 +296,24 @@
       line.setAttribute("y2", p1.y);
       line.setAttribute("data-id", String(seg.id));
       line.classList.add("map-seg");
-      if (seg.id === state.track.startSegment) line.classList.add("is-start");
-      if (seg.id === state.track.currentSegment) line.classList.add("is-current");
-      line.addEventListener("click", async () => {
-        try {
-          const data = await api("/api/track/start-segment", {
-            method: "POST",
-            body: JSON.stringify({ index: seg.id }),
-          });
-          applyTrackSnapshot(data.track);
-          $("mapSegIndex").value = String(seg.id);
-          $("mapSegSpeed").value = String(seg.maxSpeed ?? 700);
-          toast(`Départ = segment ${seg.id}`);
-        } catch (err) {
-          toast(err.message);
-        }
-      });
+      if (!state.track.mapping && seg.id === state.track.startSegment) line.classList.add("is-start");
+      if (seg.id === highlightId) line.classList.add("is-current");
+      if (!state.track.mapping) {
+        line.addEventListener("click", async () => {
+          try {
+            const data = await api("/api/track/start-segment", {
+              method: "POST",
+              body: JSON.stringify({ index: seg.id }),
+            });
+            applyTrackSnapshot(data.track);
+            $("mapSegIndex").value = String(seg.id);
+            $("mapSegSpeed").value = String(seg.maxSpeed ?? 700);
+            toast(`Départ = segment ${seg.id}`);
+          } catch (err) {
+            toast(err.message);
+          }
+        });
+      }
       g.appendChild(line);
     });
 
@@ -1356,6 +1371,11 @@
       case "mappingStarted":
         state.track.mapping = true;
         state.track.rawCount = 0;
+        state.track.lapsDone = 0;
+        state.track.verifyCount = 0;
+        state.track.preview = null;
+        state.track.lastSample = null;
+        state.track.currentSegment = 0;
         toast(`Mapping ${msg.vehicleId}`);
         renderTrackMap();
         break;
@@ -1363,14 +1383,23 @@
         logLine("in", "Mapping: 1ʳᵉ mesure wheelDistance ignorée");
         break;
       case "mappingProgress":
+        state.track.mapping = true;
         state.track.rawCount = msg.count || 0;
         state.track.lapsDone = msg.lapsDone ?? state.track.lapsDone;
         state.track.lapsRequired = msg.lapsRequired ?? 2;
         state.track.verifyCount = msg.verifyCount ?? state.track.verifyCount;
+        state.track.currentSegment = msg.currentSegment ?? state.track.currentSegment;
+        if (msg.preview) state.track.preview = msg.preview;
+        if (msg.sample) state.track.lastSample = msg.sample;
+        if (msg.sample) {
+          logLine(
+            "in",
+            `Map seg #${state.track.rawCount} L/R ${msg.sample.left}/${msg.sample.right}` +
+              (msg.matched === false ? " ≠" : "")
+          );
+        }
         if (msg.lapsDone === 1 && msg.verifyCount === 1) {
           toast("Tour 1 OK — 2ᵉ tour de vérification…");
-        } else if (msg.matched === false) {
-          logLine("err", "Mapping: mesure tour 2 ≠ tour 1 (on attend la suivante)");
         }
         renderTrackMap();
         break;
@@ -1378,6 +1407,7 @@
         state.track.mapping = false;
         state.track.lapsDone = 2;
         state.track.map = msg.map || null;
+        state.track.preview = null;
         toast("2 tours OK — map prête");
         renderTrackMap();
         break;

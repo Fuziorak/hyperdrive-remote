@@ -122,6 +122,7 @@ class TrackController:
         self.map: dict[str, Any] | None = self._load_map()
 
     def snapshot(self) -> dict[str, Any]:
+        preview = self._preview_map() if self.mapping and self._raw else None
         return {
             "mapping": self.mapping,
             "mappingVehicle": self.mapping_vehicle,
@@ -129,6 +130,7 @@ class TrackController:
             "lapsDone": self._laps_done,
             "lapsRequired": 2,
             "verifyCount": self._verify_count,
+            "lapLen": self._lap_len,
             "latencyActive": self.latency_active,
             "latencyResult": self.latency_result,
             "raceActive": self.race_active,
@@ -136,7 +138,48 @@ class TrackController:
             "startSegment": self.start_segment,
             "currentSegment": self.current_segment,
             "map": self.map,
+            "preview": preview,
+            "lastSample": self._raw[-1] if self._raw else None,
         }
+
+    def _preview_map(self) -> dict[str, Any] | None:
+        if not self._raw:
+            return None
+        return self._map_from_raw(self._raw, draft=True)
+
+    def _map_from_raw(self, raw: list[dict[str, Any]], *, draft: bool = False) -> dict[str, Any]:
+        segments = build_geometry(raw)
+        xs = [s["x0"] for s in segments] + [s["x1"] for s in segments]
+        ys = [s["y0"] for s in segments] + [s["y1"] for s in segments]
+        return {
+            "createdAt": time.time(),
+            "segmentCount": len(segments),
+            "segments": segments,
+            "draft": draft,
+            "bounds": {
+                "minX": min(xs) if xs else 0,
+                "maxX": max(xs) if xs else 1,
+                "minY": min(ys) if ys else 0,
+                "maxY": max(ys) if ys else 1,
+            },
+        }
+
+    def _progress_event(self, vehicle_id: str, sample: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        preview = self._preview_map()
+        evt: dict[str, Any] = {
+            "type": "mappingProgress",
+            "vehicleId": vehicle_id,
+            "count": len(self._raw),
+            "lapsDone": self._laps_done,
+            "lapsRequired": 2,
+            "verifyCount": self._verify_count,
+            "lapLen": self._lap_len,
+            "sample": sample,
+            "preview": preview,
+            "currentSegment": max(0, len(self._raw) - 1),
+        }
+        evt.update(extra)
+        return evt
 
     def _load_map(self) -> dict[str, Any] | None:
         try:
@@ -248,7 +291,7 @@ class TrackController:
             }
         )
 
-        if self.latency_active and self.latency_vehicle == vehicle_id:
+        if self.latency_active and (self.latency_vehicle or "").upper() == str(vehicle_id).upper():
             elapsed = max(0.0, time.time() - self.latency_started_at)
             self.latency_active = False
             self.latency_result = {
@@ -261,7 +304,8 @@ class TrackController:
             self._emit({"type": "latencyResult", "result": self.latency_result})
             return
 
-        if self.mapping and self.mapping_vehicle == vehicle_id:
+        map_vid = (self.mapping_vehicle or "").upper()
+        if self.mapping and map_vid and map_vid == str(vehicle_id).upper():
             if self._skip_first:
                 self._skip_first = False
                 self._emit({"type": "mappingSkippedFirst", "vehicleId": vehicle_id})
@@ -273,19 +317,14 @@ class TrackController:
                 matched = samples_match(sample, expected)
                 if matched:
                     self._verify_count += 1
+                self.current_segment = min(self._verify_count, self._lap_len - 1)
                 self._emit(
-                    {
-                        "type": "mappingProgress",
-                        "vehicleId": vehicle_id,
-                        "count": len(self._raw),
-                        "lapsDone": self._laps_done,
-                        "lapsRequired": 2,
-                        "verifyCount": self._verify_count,
-                        "lapLen": self._lap_len,
-                        "matched": matched,
-                        "sample": sample,
-                        "expected": {"left": expected["left"], "right": expected["right"]},
-                    }
+                    self._progress_event(
+                        vehicle_id,
+                        sample,
+                        matched=matched,
+                        expected={"left": expected["left"], "right": expected["right"]},
+                    )
                 )
                 if self._verify_count >= self._lap_len:
                     self._laps_done = 2
@@ -300,36 +339,18 @@ class TrackController:
                 self._laps_done = 1
                 self._lap_len = len(self._raw)
                 self._verify_count = 1  # cette mesure = 1ʳᵉ du tour 2
-                self._emit(
-                    {
-                        "type": "mappingProgress",
-                        "vehicleId": vehicle_id,
-                        "count": len(self._raw),
-                        "lapsDone": 1,
-                        "lapsRequired": 2,
-                        "verifyCount": self._verify_count,
-                        "lapLen": self._lap_len,
-                        "matched": True,
-                        "sample": sample,
-                    }
-                )
+                self.current_segment = 0
+                self._emit(self._progress_event(vehicle_id, sample, matched=True))
                 return
 
             sample["maxSpeed"] = 700
             self._raw.append(sample)
-            self._emit(
-                {
-                    "type": "mappingProgress",
-                    "vehicleId": vehicle_id,
-                    "count": len(self._raw),
-                    "lapsDone": 0,
-                    "lapsRequired": 2,
-                    "sample": sample,
-                }
-            )
+            self.current_segment = len(self._raw) - 1
+            self._emit(self._progress_event(vehicle_id, sample))
             return
 
-        if self.race_active and self.race_vehicle == vehicle_id and self.map:
+        race_vid = (self.race_vehicle or "").upper()
+        if self.race_active and race_vid and race_vid == str(vehicle_id).upper() and self.map:
             segs = self.map["segments"]
             if not segs:
                 return
@@ -347,20 +368,7 @@ class TrackController:
             )
 
     def _finalize_map(self) -> None:
-        segments = build_geometry(self._raw)
-        xs = [s["x0"] for s in segments] + [s["x1"] for s in segments]
-        ys = [s["y0"] for s in segments] + [s["y1"] for s in segments]
-        self.map = {
-            "createdAt": time.time(),
-            "segmentCount": len(segments),
-            "segments": segments,
-            "bounds": {
-                "minX": min(xs) if xs else 0,
-                "maxX": max(xs) if xs else 1,
-                "minY": min(ys) if ys else 0,
-                "maxY": max(ys) if ys else 1,
-            },
-        }
+        self.map = self._map_from_raw(self._raw, draft=False)
         self.start_segment = 0
         self.current_segment = 0
         self._save_map()
