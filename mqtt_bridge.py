@@ -387,10 +387,11 @@ class MqttBridge:
 
     def start_mapping(self, vehicle_id: str, cruise_speed: int = 300) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
+        # Important: démarrer le tracking AVANT set_speed, et sans manual=
+        # (manual couperait le mapping via yield_to_manual).
         out = self.track.start_mapping(vehicle_id)
-        # Mapping: vitesse plafonnée pour des mesures L/R stables
         spd = max(0, min(300, int(cruise_speed)))
-        self.set_speed(vehicle_id, spd, 1000)
+        self.set_speed(vehicle_id, spd, 1000, manual=False)
         return out
 
     def stop_mapping(self, finalize: bool = False) -> dict[str, Any]:
@@ -398,7 +399,11 @@ class MqttBridge:
         out = self.track.stop_mapping(finalize=finalize)
         if vid:
             try:
-                self.panic_stop(vid)
+                # STOP physique sans ré-effacer via yield (déjà clear côté track)
+                self._remember(vid, velocity=0, acceleration=2000)
+                self._publish_speed(vid, 0, 2000)
+                if self._hold_enabled.get(vid):
+                    self.set_hold(vid, False)
             except Exception:
                 pass
         return out

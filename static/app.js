@@ -223,17 +223,24 @@
     state.track.raceActive = !!track.raceActive;
     state.track.startSegment = track.startSegment ?? 0;
     state.track.currentSegment = track.currentSegment ?? 0;
-    state.track.map = track.map || null;
-    state.track.preview = track.preview || null;
+    // Pendant le mapping: ne jamais réinjecter une ancienne map sauvegardée
+    if (state.track.mapping) {
+      state.track.map = null;
+      state.track.preview = track.preview ?? state.track.preview;
+      state.track.courseName = null;
+    } else {
+      state.track.map = track.map || null;
+      state.track.preview = track.preview || null;
+      state.track.courseName = track.courseName || null;
+    }
     state.track.latencyResult = track.latencyResult || null;
     state.track.rawCount = track.rawCount || 0;
     state.track.lapsDone = track.lapsDone || 0;
     state.track.lapsRequired = track.lapsRequired || 2;
     state.track.verifyCount = track.verifyCount || 0;
     state.track.lastSample = track.lastSample || null;
-    state.track.courseName = track.courseName || null;
     state.track.courses = track.courses || [];
-    state.track.partCount = track.partCount || track.map?.partCount || null;
+    state.track.partCount = track.partCount || track.map?.partCount || state.track.partCount;
     state.track.curveGain = track.curveGain ?? track.map?.curveGain ?? state.track.curveGain;
     if (state.track.partCount && $("mapPartCount")) {
       $("mapPartCount").value = String(state.track.partCount);
@@ -1502,14 +1509,20 @@
       }
       case "mappingStarted":
         state.track.mapping = true;
+        state.track.raceActive = false;
         state.track.rawCount = 0;
         state.track.lapsDone = 0;
         state.track.verifyCount = 0;
         state.track.preview = null;
         state.track.lastSample = null;
         state.track.currentSegment = 0;
-        toast(`Mapping ${msg.vehicleId}`);
+        state.track.map = null; // oublier l'ancienne map active
+        state.track.courseName = null;
+        toast(`Mapping ${msg.vehicleId} · anciennes données ignorées`);
         renderTrackMap();
+        break;
+      case "mappingSkippedStale":
+        logLine("in", "Mapping: wheelDistance retenu/stale ignoré");
         break;
       case "mappingSkippedFirst":
         logLine("in", "Mapping: 1ʳᵉ mesure wheelDistance ignorée");
@@ -1569,7 +1582,10 @@
         state.track.preview = null;
         state.track.lastSample = null;
         state.track.currentSegment = 0;
-        if (msg.map) state.track.map = msg.map;
+        state.track.map = null;
+        state.track.courseName = null;
+        if (msg.courses) state.track.courses = msg.courses;
+        renderCourseSelect();
         renderTrackMap();
         toast("Mapping effacé — reprise à 0");
         break;

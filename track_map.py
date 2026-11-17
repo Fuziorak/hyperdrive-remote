@@ -363,6 +363,7 @@ class TrackController:
         self._laps_done = 0
         self._lap_len = 0
         self._verify_count = 0
+        self._mapping_started_at = 0.0
         self.latency_active = False
         self.latency_vehicle: str | None = None
         self.latency_started_at = 0.0
@@ -648,14 +649,27 @@ class TrackController:
         return {"ok": True, "vehicleId": vehicle_id}
 
     def start_mapping(self, vehicle_id: str) -> dict[str, Any]:
+        # Couper course/latence + oublier l'ancienne map active (sinon elle bloque le live)
+        if self.race_active:
+            self.stop_race()
+        if self.latency_active:
+            self.latency_active = False
+            self.latency_vehicle = None
+        self._clear_session_data(keep_courses=True)
         self.mapping = True
         self.mapping_vehicle = vehicle_id
         self._skip_first = True
-        self._raw = []
-        self._laps_done = 0
-        self._lap_len = 0
-        self._verify_count = 0
-        self._emit({"type": "mappingStarted", "vehicleId": vehicle_id, "lapsRequired": 2})
+        self._mapping_started_at = time.time()
+        self._emit(
+            {
+                "type": "mappingStarted",
+                "vehicleId": vehicle_id,
+                "lapsRequired": 2,
+                "map": None,
+                "preview": None,
+                "rawCount": 0,
+            }
+        )
         return {"ok": True, "vehicleId": vehicle_id}
 
     def stop_mapping(self, finalize: bool = False) -> dict[str, Any]:
@@ -669,24 +683,40 @@ class TrackController:
         # Stop map = tout effacer, reprendre à 0
         return self.clear_mapping(vehicle_id=vid)
 
-    def clear_mapping(self, vehicle_id: str | None = None) -> dict[str, Any]:
-        """Annule le mapping en cours et remet les mesures à zéro."""
-        self.mapping = False
-        self.mapping_vehicle = None
-        self._skip_first = False
+    def _clear_session_data(self, *, keep_courses: bool = True) -> None:
+        """Efface map active + mesures. Les fichiers maps/courses/ restent si keep_courses."""
         self._raw = []
         self._laps_done = 0
         self._lap_len = 0
         self._verify_count = 0
-        self.current_segment = self.start_segment
+        self._skip_first = False
+        self.map = None
+        self.course_name = None
+        self.start_segment = 0
+        self.current_segment = 0
+        try:
+            if _MAP_PATH.exists():
+                _MAP_PATH.unlink()
+        except Exception:
+            pass
+        # Ne pas toucher last_course.txt / courses/*.json (bibliothèque)
+
+    def clear_mapping(self, vehicle_id: str | None = None) -> dict[str, Any]:
+        """Annule le mapping en cours et remet les mesures à zéro."""
+        self.mapping = False
+        self.mapping_vehicle = None
+        self._clear_session_data(keep_courses=True)
         self._emit(
             {
                 "type": "mappingCleared",
                 "vehicleId": vehicle_id,
-                "map": self.map,
+                "map": None,
+                "preview": None,
+                "rawCount": 0,
+                "courses": self.list_courses(),
             }
         )
-        return {"ok": True, "cleared": True, "map": self.map}
+        return {"ok": True, "cleared": True, "map": None, "courses": self.list_courses()}
 
     def set_start_segment(self, index: int) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):
@@ -881,6 +911,10 @@ class TrackController:
 
         map_vid = (self.mapping_vehicle or "").upper()
         if self.mapping and map_vid and map_vid == str(vehicle_id).upper():
+            # Ignore les wheelDistance trop tôt (message MQTT retenu / stale)
+            if self._mapping_started_at and (time.time() - self._mapping_started_at) < 0.35:
+                self._emit({"type": "mappingSkippedStale", "vehicleId": vehicle_id})
+                return
             if self._skip_first:
                 self._skip_first = False
                 self._emit({"type": "mappingSkippedFirst", "vehicleId": vehicle_id})
