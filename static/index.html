@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261117k" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261117l" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -281,8 +281,16 @@
           <button id="btnLatency" class="btn secondary" type="button">Test latence</button>
           <button id="btnMapStart" class="btn accent" type="button">Mapper</button>
           <button id="btnMapStop" class="btn ghost" type="button">Stop map</button>
-          <button id="btnRaceMapped" class="btn primary" type="button">Course map</button>
+          <button id="btnRacePickMap" class="btn primary" type="button">Course map</button>
+          <button id="btnLaunchRace" class="btn accent" type="button">Lancer la course</button>
           <button id="btnRaceMappedStop" class="btn danger" type="button">Stop course</button>
+        </div>
+        <div id="raceMapPicker" class="race-map-picker" hidden>
+          <div class="panel-head compact">
+            <h3>Choisir une map pour la course</h3>
+            <p>Clique une map, puis « Lancer la course »</p>
+          </div>
+          <div id="raceMapList" class="race-map-list"></div>
         </div>
         <div class="map-meta">
           <span>Départ <strong id="mapStartLabel">—</strong></span>
@@ -356,7 +364,7 @@
             <button id="btnCourseDelete" class="btn ghost" type="button">Supprimer</button>
           </div>
         </div>
-        <p class="hint map-hint">Le gain de courbes se calcule auto selon le nb de bouts (circuit fermé, un seul chemin, sans croisement). Sauver/charger pour reprendre.</p>
+        <p class="hint map-hint">Mapper → mesures. Stop map → efface et remet à 0. Course map → choisis une map. Lancer la course → démarre sur la map choisie.</p>
       </aside>
     </section>
 
@@ -414,6 +422,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261117k"></script>
+  <script src="/static/app.js?v=20261117l"></script>
 </body>
 </html>

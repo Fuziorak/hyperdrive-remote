@@ -407,6 +407,44 @@ body {
   font-size: 0.78rem;
   color: var(--muted);
 }
+.race-map-picker {
+  margin-top: 0.35rem;
+  padding: 0.7rem 0.75rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+}
+.race-map-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.race-map-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+.race-map-item:hover {
+  border-color: color-mix(in srgb, var(--amber) 50%, var(--line));
+}
+.race-map-item.is-selected {
+  border-color: var(--amber);
+  outline: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.race-map-item strong { font-size: 0.92rem; }
+.race-map-item span { color: var(--muted); font-size: 0.78rem; }
 .map-library {
   margin-top: 0.35rem;
   padding: 0.7rem 0.75rem 0.8rem;

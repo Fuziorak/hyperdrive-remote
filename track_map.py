@@ -624,8 +624,29 @@ class TrackController:
         self.mapping_vehicle = None
         if finalize and len(self._raw) >= _MIN_SEGMENTS:
             self._finalize_map()
-        self._emit({"type": "mappingStopped", "vehicleId": vid, "map": self.map})
-        return {"ok": True, "map": self.map}
+            self._emit({"type": "mappingStopped", "vehicleId": vid, "map": self.map})
+            return {"ok": True, "map": self.map}
+        # Stop map = tout effacer, reprendre à 0
+        return self.clear_mapping(vehicle_id=vid)
+
+    def clear_mapping(self, vehicle_id: str | None = None) -> dict[str, Any]:
+        """Annule le mapping en cours et remet les mesures à zéro."""
+        self.mapping = False
+        self.mapping_vehicle = None
+        self._skip_first = False
+        self._raw = []
+        self._laps_done = 0
+        self._lap_len = 0
+        self._verify_count = 0
+        self.current_segment = self.start_segment
+        self._emit(
+            {
+                "type": "mappingCleared",
+                "vehicleId": vehicle_id,
+                "map": self.map,
+            }
+        )
+        return {"ok": True, "cleared": True, "map": self.map}
 
     def set_start_segment(self, index: int) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):

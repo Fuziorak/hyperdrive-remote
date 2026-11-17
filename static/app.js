@@ -244,6 +244,38 @@
     if (state.track.courseName && $("courseNameInput") && !$("courseNameInput").value) {
       $("courseNameInput").value = state.track.courseName;
     }
+    renderRaceMapPicker();
+  }
+
+  function renderRaceMapPicker() {
+    const list = $("raceMapList");
+    if (!list) return;
+    const courses = state.track.courses || [];
+    const selected = state.track.courseName || "";
+    if (!courses.length) {
+      list.innerHTML = `<p class="hint">Aucune map sauvée — mappe puis Sauver map.</p>`;
+      return;
+    }
+    list.innerHTML = courses
+      .map((c) => {
+        const active = c.name === selected ? " is-selected" : "";
+        return `<button type="button" class="race-map-item${active}" data-name="${escapeHtml(c.name)}">
+          <strong>${escapeHtml(c.name)}</strong>
+          <span>${c.segmentCount || "?"} bouts</span>
+        </button>`;
+      })
+      .join("");
+    list.querySelectorAll(".race-map-item").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await loadNamedMap(btn.getAttribute("data-name"));
+          renderRaceMapPicker();
+          toast(`Map prête: ${btn.getAttribute("data-name")} — Lancer la course`);
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+    });
   }
 
   function activeTrackMap() {
@@ -1514,6 +1546,18 @@
         if (msg.map) state.track.map = msg.map;
         renderTrackMap();
         break;
+      case "mappingCleared":
+        state.track.mapping = false;
+        state.track.rawCount = 0;
+        state.track.lapsDone = 0;
+        state.track.verifyCount = 0;
+        state.track.preview = null;
+        state.track.lastSample = null;
+        state.track.currentSegment = 0;
+        if (msg.map) state.track.map = msg.map;
+        renderTrackMap();
+        toast("Mapping effacé — reprise à 0");
+        break;
       case "latencyStarted":
         $("mapLatencyLabel").dataset.pending = "1";
         $("mapLatencyLabel").textContent = "…";
@@ -1838,26 +1882,57 @@
 
   $("btnMapStop").addEventListener("click", async () => {
     try {
+      // Stop map = effacer les mesures et reprendre à 0 (pas de finalisation)
       const data = await api("/api/track/mapping/stop", {
         method: "POST",
-        body: JSON.stringify({ finalize: true }),
+        body: JSON.stringify({ finalize: false }),
       });
+      state.track.mapping = false;
+      state.track.rawCount = 0;
+      state.track.lapsDone = 0;
+      state.track.verifyCount = 0;
+      state.track.preview = null;
+      state.track.lastSample = null;
       applyTrackSnapshot(data.track);
-      toast("Mapping arrêté");
+      toast("Mapping effacé — reprise à 0");
     } catch (err) {
       toast(err.message);
     }
   });
 
-  $("btnRaceMapped").addEventListener("click", async () => {
+  $("btnRacePickMap").addEventListener("click", async () => {
     try {
+      const data = await api("/api/track/courses");
+      if (data.track) applyTrackSnapshot(data.track);
+      else if (data.courses) {
+        state.track.courses = data.courses;
+        renderCourseSelect();
+      }
+      const picker = $("raceMapPicker");
+      picker.hidden = false;
+      picker.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      renderRaceMapPicker();
+      toast("Choisis une map dans la liste");
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnLaunchRace").addEventListener("click", async () => {
+    try {
+      if (!state.track.map?.segments?.length) {
+        toast("Choisis d’abord une map via Course map");
+        $("btnRacePickMap").click();
+        return;
+      }
       const id = requireSlot("A");
       const data = await api("/api/track/race/start", {
         method: "POST",
         body: JSON.stringify({ vehicleId: id }),
       });
       applyTrackSnapshot(data.track);
-      toast(`Course depuis segment ${data.currentSegment}`);
+      $("raceMapPicker").hidden = true;
+      toast(`Course lancée · ${state.track.courseName || "map"} · seg ${data.currentSegment}`);
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);
     }
