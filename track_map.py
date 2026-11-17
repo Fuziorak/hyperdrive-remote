@@ -20,7 +20,10 @@ Listener = Callable[[dict[str, Any]], None]
 
 # Approximate axle width for heading delta from wheel travel (cm-like units from lab).
 _AXLE = 48.0
-_MATCH_TOL = 4.0
+# Relative match: values may differ by ~10% (ratio ≤ 1.1), not 1:1 exact.
+_MATCH_RATIO = 1.1
+# Floor so tiny distances still match without exploding the ratio.
+_MATCH_ABS_FLOOR = 3.0
 _MIN_SEGMENTS = 3
 _MAP_PATH = Path(__file__).resolve().parent / "maps" / "track.json"
 
@@ -42,8 +45,20 @@ def heading_delta(left: float, right: float) -> float:
     return (float(left) - float(right)) / _AXLE
 
 
-def samples_match(a: dict[str, Any], b: dict[str, Any], tol: float = _MATCH_TOL) -> bool:
-    return abs(float(a["left"]) - float(b["left"])) <= tol and abs(float(a["right"]) - float(b["right"])) <= tol
+def _value_close(x: float, y: float, ratio: float = _MATCH_RATIO, abs_floor: float = _MATCH_ABS_FLOOR) -> bool:
+    ax, ay = abs(float(x)), abs(float(y))
+    if abs(ax - ay) <= abs_floor:
+        return True
+    lo = min(ax, ay)
+    hi = max(ax, ay)
+    if lo <= 1e-6:
+        return hi <= abs_floor
+    return (hi / lo) <= ratio
+
+
+def samples_match(a: dict[str, Any], b: dict[str, Any], ratio: float = _MATCH_RATIO) -> bool:
+    """True if left/right are within ~ratio (default 1.1) of each other."""
+    return _value_close(a["left"], b["left"], ratio) and _value_close(a["right"], b["right"], ratio)
 
 
 def build_geometry(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
