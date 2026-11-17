@@ -398,6 +398,24 @@ body {
   gap: 0.5rem;
   align-items: end;
 }
+.map-slowdown-tools {
+  margin-top: 0.15rem;
+}
+.slowdown-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.slowdown-readout {
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.slowdown-label input[type="range"] {
+  width: 100%;
+  accent-color: var(--amber);
+}
 .map-seg-tools label,
 .map-curve-tools label,
 .map-course-tools label {

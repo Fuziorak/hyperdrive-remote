@@ -919,7 +919,7 @@ class MqttBridge:
                     try:
                         segs = (self.track.map or {}).get("segments") or []
                         if segs:
-                            spd = int(segs[self.track.current_segment].get("maxSpeed", 700))
+                            spd = self.track.target_speed_for_segment(self.track.current_segment)
                             self.set_speed(vid, spd, 1400)
                     except Exception as exc:
                         debug_log.warn("mqtt", "race speed apply failed", error=str(exc))

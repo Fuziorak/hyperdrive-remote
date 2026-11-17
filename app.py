@@ -65,6 +65,7 @@ def _broadcast(event: dict[str, Any]) -> None:
         "courseLoaded",
         "courseDeleted",
         "manualOverride",
+        "turnSlowdownSet",
     }:
         debug_log.info("event", f"broadcast {et}", event=event)
     elif et == "mqttOut":
@@ -421,6 +422,16 @@ def api_track_curve_gain():
 def api_track_rebuild():
     try:
         out = orch.track.rebuild_geometry()
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/turn-slowdown")
+def api_track_turn_slowdown():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_turn_slowdown(float(data.get("pct", data.get("turnSlowdownPct", 40))))
         return jsonify({**out, "track": orch.track.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400

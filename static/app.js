@@ -87,8 +87,22 @@
       courses: [],
       partCount: null,
       curveGain: 3.2,
+      turnSlowdownPct: 40,
     },
   };
+
+  function curveSpeedHint(pct) {
+    const p = Math.max(0, Math.min(100, Number(pct) || 0)) / 100;
+    return Math.round(500 * (1 - p));
+  }
+
+  function syncTurnSlowdownUI(pct) {
+    const v = Math.max(0, Math.min(100, Number(pct) || 0));
+    state.track.turnSlowdownPct = v;
+    if ($("turnSlowdownSlider")) $("turnSlowdownSlider").value = String(v);
+    if ($("turnSlowdownValue")) $("turnSlowdownValue").textContent = String(v);
+    if ($("turnSlowdownSpeedHint")) $("turnSlowdownSpeedHint").textContent = String(curveSpeedHint(v));
+  }
 
   const $ = (id) => document.getElementById(id);
   const logEl = $("log");
@@ -227,6 +241,7 @@
     if ($("mapCurveGain") && state.track.curveGain != null) {
       $("mapCurveGain").value = String(state.track.curveGain);
     }
+    if (track.turnSlowdownPct != null) syncTurnSlowdownUI(track.turnSlowdownPct);
     renderCourseSelect();
     renderTrackMap();
   }
@@ -1590,7 +1605,8 @@
         logLine(
           msg.matched === false ? "err" : "in",
           `Bout ${msg.finishedSegment}→${msg.currentSegment}` +
-            (msg.matched === false ? " (bruité, toléré ≤1.3)" : " OK")
+            ` · ${msg.turn || "?"} @${msg.targetSpeed}` +
+            (msg.matched === false ? " (bruité ≤1.3)" : "")
         );
         renderTrackMap();
         break;
@@ -1608,6 +1624,9 @@
         renderTrackMap();
         break;
       }
+      case "turnSlowdownSet":
+        syncTurnSlowdownUI(msg.turnSlowdownPct ?? state.track.turnSlowdownPct);
+        break;
       case "mapStartSegment":
         state.track.startSegment = msg.startSegment ?? 0;
         state.track.currentSegment = msg.currentSegment ?? state.track.startSegment;
@@ -1918,6 +1937,24 @@
     }
   });
 
+  let _slowdownTimer = null;
+  $("turnSlowdownSlider").addEventListener("input", () => {
+    const pct = Number($("turnSlowdownSlider").value) || 0;
+    syncTurnSlowdownUI(pct);
+    clearTimeout(_slowdownTimer);
+    _slowdownTimer = setTimeout(async () => {
+      try {
+        const data = await api("/api/track/turn-slowdown", {
+          method: "POST",
+          body: JSON.stringify({ pct }),
+        });
+        applyTrackSnapshot(data.track);
+      } catch (err) {
+        toast(err.message);
+      }
+    }, 180);
+  });
+
   $("btnLaunchRace").addEventListener("click", async () => {
     try {
       if (!state.track.map?.segments?.length) {
@@ -1925,6 +1962,11 @@
         $("btnRacePickMap").click();
         return;
       }
+      const pct = Number($("turnSlowdownSlider").value) || 0;
+      await api("/api/track/turn-slowdown", {
+        method: "POST",
+        body: JSON.stringify({ pct }),
+      });
       const id = requireSlot("A");
       const data = await api("/api/track/race/start", {
         method: "POST",
@@ -1932,7 +1974,9 @@
       });
       applyTrackSnapshot(data.track);
       $("raceMapPicker").hidden = true;
-      toast(`Course lancée · ${state.track.courseName || "map"} · seg ${data.currentSegment}`);
+      toast(
+        `Course · ${state.track.courseName || "map"} · droits max · virages ~${curveSpeedHint(pct)} (${pct}%)`
+      );
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);
     }

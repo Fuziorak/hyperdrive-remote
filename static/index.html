@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261117l" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261117m" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -343,6 +343,14 @@
           </label>
           <button id="btnRebuildMap" class="btn accent" type="button">Recalculer circuit</button>
         </div>
+        <div class="map-slowdown-tools">
+          <label class="slowdown-label">
+            Ralentissement virages
+            <span class="slowdown-readout"><strong id="turnSlowdownValue">40</strong>% → virage ~<strong id="turnSlowdownSpeedHint">300</strong></span>
+            <input id="turnSlowdownSlider" type="range" min="0" max="100" step="1" value="40" />
+          </label>
+          <p class="hint">0% = 500 dans les virages · 100% = 0. Droits = vitesse max. Plus le virage est serré, plus c’est lent.</p>
+        </div>
         <div class="map-library">
           <div class="panel-head compact">
             <h3>Maps sauvegardées</h3>
@@ -422,6 +430,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261117l"></script>
+  <script src="/static/app.js?v=20261117m"></script>
 </body>
 </html>

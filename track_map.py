@@ -30,6 +30,9 @@ _RACE_MATCH_RATIO = 1.3
 # Floor so tiny distances still match without exploding the ratio.
 _MATCH_ABS_FLOOR = 3.0
 _MIN_SEGMENTS = 3
+# Course auto : droits à fond, virages selon curseur de ralentissement.
+_STRAIGHT_MAX_SPEED = 1000
+_CURVE_SPEED_AT_0 = 500  # 0% ralentissement → 500 dans les virages ; 100% → 0
 _MAPS_DIR = Path(__file__).resolve().parent / "maps"
 _MAP_PATH = _MAPS_DIR / "track.json"
 _COURSES_DIR = _MAPS_DIR / "courses"
@@ -229,6 +232,39 @@ def samples_match(a: dict[str, Any], b: dict[str, Any], ratio: float = _MATCH_RA
     return _value_close(a["left"], b["left"], ratio) and _value_close(a["right"], b["right"], ratio)
 
 
+def turn_tightness(left: float, right: float) -> float:
+    """0 = droit, 1 = virage très serré (écart L/R relatif)."""
+    avg = max((float(left) + float(right)) / 2.0, 1.0)
+    slip = abs(float(left) - float(right)) / avg
+    return max(0.0, min(1.0, (slip - 0.06) / 0.5))
+
+
+def race_speed_for_segment(
+    seg: dict[str, Any],
+    slowdown_pct: float,
+    *,
+    straight_max: int = _STRAIGHT_MAX_SPEED,
+) -> int:
+    """Droits → vitesse max. Virages → 500*(1-pct/100), encore plus bas si serré."""
+    left = float(seg.get("left", 0))
+    right = float(seg.get("right", 0))
+    turn = seg.get("turn") or classify_turn(left, right)
+    tight = turn_tightness(left, right)
+
+    if turn == "straight" and tight < 0.12:
+        return int(max(0, min(1000, straight_max)))
+
+    pct = max(0.0, min(100.0, float(slowdown_pct))) / 100.0
+    # 0% → 500 ; 100% → 0
+    base = _CURVE_SPEED_AT_0 * (1.0 - pct)
+    # Plus le virage est serré, plus on freine (jusqu'à ~75% de baisse supplémentaire)
+    speed = base * (1.0 - 0.75 * tight)
+    # Contours : plafonnés un peu sous 500 sauf curseur à 0%
+    if pct > 0:
+        speed = min(speed, 450.0)
+    return int(max(0, min(1000, round(speed))))
+
+
 def _close_loop_path(path: list[dict[str, float]]) -> list[dict[str, float]]:
     """Redistribute end→start gap so the drawn parcours closes cleanly."""
     if len(path) < 2:
@@ -337,6 +373,8 @@ class TrackController:
         self.current_segment = 0
         self.part_count: int | None = None
         self.curve_gain: float = _CURVE_GAIN
+        self.turn_slowdown_pct: float = 40.0  # % freinage virages (0=500, 100=0)
+        self.straight_max_speed: int = _STRAIGHT_MAX_SPEED
         self.map: dict[str, Any] | None = self._load_map()
         self.course_name: str | None = (self.map or {}).get("name") if self.map else None
         if self.map and self.map.get("partCount"):
@@ -389,6 +427,8 @@ class TrackController:
             "courses": self.list_courses(),
             "partCount": self.part_count or ((self.map or {}).get("partCount")),
             "curveGain": self.curve_gain,
+            "turnSlowdownPct": self.turn_slowdown_pct,
+            "straightMaxSpeed": self.straight_max_speed,
             "raceMatchRatio": _RACE_MATCH_RATIO,
         }
 
@@ -728,22 +768,46 @@ class TrackController:
             self._emit({"type": "curveGainSet", "curveGain": self.curve_gain})
         return {"ok": True, "curveGain": self.curve_gain}
 
+    def set_turn_slowdown(self, pct: float) -> dict[str, Any]:
+        self.turn_slowdown_pct = max(0.0, min(100.0, float(pct)))
+        self._emit({"type": "turnSlowdownSet", "turnSlowdownPct": self.turn_slowdown_pct})
+        return {"ok": True, "turnSlowdownPct": self.turn_slowdown_pct}
+
+    def target_speed_for_segment(self, index: int) -> int:
+        if not self.map or not self.map.get("segments"):
+            return 0
+        segs = self.map["segments"]
+        seg = segs[int(index) % len(segs)]
+        return race_speed_for_segment(
+            seg,
+            self.turn_slowdown_pct,
+            straight_max=self.straight_max_speed,
+        )
+
     def start_race(self, vehicle_id: str) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):
             raise RuntimeError("Mappe d’abord la piste")
         self.race_active = True
         self.race_vehicle = vehicle_id
         self.current_segment = self.start_segment
-        speed = int(self.map["segments"][self.current_segment].get("maxSpeed", 700))
+        speed = self.target_speed_for_segment(self.current_segment)
+        seg = self.map["segments"][self.current_segment]
         self._emit(
             {
                 "type": "raceStarted",
                 "vehicleId": vehicle_id,
                 "currentSegment": self.current_segment,
                 "targetSpeed": speed,
+                "turn": seg.get("turn"),
+                "turnSlowdownPct": self.turn_slowdown_pct,
             }
         )
-        return {"ok": True, "currentSegment": self.current_segment, "targetSpeed": speed}
+        return {
+            "ok": True,
+            "currentSegment": self.current_segment,
+            "targetSpeed": speed,
+            "turnSlowdownPct": self.turn_slowdown_pct,
+        }
 
     def stop_race(self) -> dict[str, Any]:
         self.race_active = False
@@ -888,7 +952,8 @@ class TrackController:
             # Même si un peu bruité (jusqu'à ~1.3), on avance au bout suivant
             next_idx = (finished_idx + 1) % n
             self.current_segment = next_idx
-            speed = int(segs[next_idx].get("maxSpeed", 700))
+            speed = self.target_speed_for_segment(next_idx)
+            nxt = segs[next_idx]
             self._emit(
                 {
                     "type": "mapPosition",
@@ -898,7 +963,9 @@ class TrackController:
                     "startSegment": self.start_segment,
                     "partCount": self.map.get("partCount") or n,
                     "targetSpeed": speed,
-                    "turn": segs[next_idx].get("turn"),
+                    "turn": nxt.get("turn"),
+                    "tightness": round(turn_tightness(nxt.get("left", 0), nxt.get("right", 0)), 3),
+                    "turnSlowdownPct": self.turn_slowdown_pct,
                     "matched": matched,
                     "matchRatio": _RACE_MATCH_RATIO,
                     "sample": {"left": sample["left"], "right": sample["right"]},
