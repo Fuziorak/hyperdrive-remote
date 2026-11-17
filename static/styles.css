@@ -299,8 +299,9 @@ body {
 }
 .map-meta strong { color: var(--text); }
 .map-canvas-wrap {
+  position: relative;
   flex: 1;
-  min-height: 280px;
+  min-height: 320px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background:
@@ -311,26 +312,49 @@ body {
 .map-svg {
   width: 100%;
   height: 100%;
-  min-height: 280px;
+  min-height: 320px;
   display: block;
+}
+.map-track-outline {
+  fill: none;
+  stroke: #1a222c;
+  stroke-width: 22;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.map-track-lane {
+  fill: none;
+  stroke: #3a4656;
+  stroke-width: 14;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .map-seg {
   fill: none;
-  stroke: #7f8ea3;
-  stroke-width: 10;
+  stroke: #9aa8ba;
+  stroke-width: 8;
   stroke-linecap: round;
+  stroke-linejoin: round;
   cursor: pointer;
   transition: stroke 0.15s ease, stroke-width 0.15s ease;
 }
-.map-seg:hover { stroke: #b8c4d6; }
-.map-seg.is-start { stroke: #e23b3b; stroke-width: 13; }
+.map-seg.turn-straight { stroke: #9aa8ba; }
+.map-seg.turn-left { stroke: #4ec3ff; }
+.map-seg.turn-right { stroke: #c084fc; }
+.map-seg:hover { stroke-width: 11; }
+.map-seg.is-start { stroke: #e23b3b; stroke-width: 12; }
 .map-seg.is-current {
   stroke: #ffb020;
-  stroke-width: 14;
-  filter: drop-shadow(0 0 6px rgba(255, 176, 32, 0.55));
+  stroke-width: 13;
+  filter: url(#mapGlow);
 }
-.map-seg.is-start.is-current {
-  stroke: #ff5a5a;
+.map-seg.is-start.is-current { stroke: #ff5a5a; }
+.map-seg-label {
+  fill: #d7dee8;
+  font-size: 9px;
+  font-family: ui-monospace, Consolas, monospace;
+  pointer-events: none;
+  opacity: 0.85;
 }
 .map-car {
   fill: #2fe0c5;
@@ -338,6 +362,30 @@ body {
   stroke-width: 2;
   filter: drop-shadow(0 0 8px rgba(47, 224, 197, 0.7));
 }
+.map-legend {
+  position: absolute;
+  left: 0.65rem;
+  bottom: 0.55rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+.map-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.28rem;
+  border-radius: 999px;
+  margin-right: 0.28rem;
+  vertical-align: middle;
+}
+.leg-straight::before { background: #9aa8ba; }
+.leg-left::before { background: #4ec3ff; }
+.leg-right::before { background: #c084fc; }
+.leg-start::before { background: #e23b3b; }
 .map-seg-tools {
   display: grid;
   grid-template-columns: 1fr 1fr auto;

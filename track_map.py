@@ -72,27 +72,29 @@ def samples_match(a: dict[str, Any], b: dict[str, Any], ratio: float = _MATCH_RA
     return _value_close(a["left"], b["left"], ratio) and _value_close(a["right"], b["right"], ratio)
 
 
-def build_geometry(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build polyline points + per-segment meta for SVG drawing."""
+def build_geometry(segments: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
+    """Build per-segment meta + continuous path points for SVG drawing."""
     x, y, heading = 0.0, 0.0, -math.pi / 2  # start facing up on screen
-    points = [{"x": x, "y": y}]
+    path: list[dict[str, float]] = [{"x": x, "y": y}]
     out: list[dict[str, Any]] = []
     for i, seg in enumerate(segments):
         left = float(seg["left"])
         right = float(seg["right"])
-        length = segment_length(left, right)
+        length = max(segment_length(left, right), 1.0)
         d_head = heading_delta(left, right)
+        x0, y0 = x, y
+        seg_path = [{"x": x0, "y": y0}]
         # March along an arc approximated by heading mid-step
-        steps = max(4, int(length / 8) or 4)
+        steps = max(6, int(length / 4) or 6)
         for s in range(1, steps + 1):
             t = s / steps
             h = heading + d_head * t
-            # chord step
             step_len = length / steps
             x += math.cos(h) * step_len
             y += math.sin(h) * step_len
-            if s == steps:
-                points.append({"x": x, "y": y})
+            pt = {"x": round(x, 3), "y": round(y, 3)}
+            seg_path.append(pt)
+            path.append(pt)
         heading += d_head
         out.append(
             {
@@ -103,13 +105,17 @@ def build_geometry(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "turn": classify_turn(left, right),
                 "headingDelta": round(d_head, 4),
                 "maxSpeed": int(seg.get("maxSpeed", 700)),
-                "x0": points[-2]["x"],
-                "y0": points[-2]["y"],
-                "x1": points[-1]["x"],
-                "y1": points[-1]["y"],
+                "x0": round(x0, 3),
+                "y0": round(y0, 3),
+                "x1": round(x, 3),
+                "y1": round(y, 3),
+                "path": seg_path,
             }
         )
-    return out
+    # Close the loop visually toward the start point
+    if path:
+        path.append({"x": path[0]["x"], "y": path[0]["y"]})
+    return out, path
 
 
 class TrackController:
@@ -162,19 +168,20 @@ class TrackController:
         return self._map_from_raw(self._raw, draft=True)
 
     def _map_from_raw(self, raw: list[dict[str, Any]], *, draft: bool = False) -> dict[str, Any]:
-        segments = build_geometry(raw)
-        xs = [s["x0"] for s in segments] + [s["x1"] for s in segments]
-        ys = [s["y0"] for s in segments] + [s["y1"] for s in segments]
+        segments, path = build_geometry(raw)
+        xs = [p["x"] for p in path] if path else [0.0]
+        ys = [p["y"] for p in path] if path else [0.0]
         return {
             "createdAt": time.time(),
             "segmentCount": len(segments),
             "segments": segments,
+            "path": path,
             "draft": draft,
             "bounds": {
-                "minX": min(xs) if xs else 0,
-                "maxX": max(xs) if xs else 1,
-                "minY": min(ys) if ys else 0,
-                "maxY": max(ys) if ys else 1,
+                "minX": min(xs),
+                "maxX": max(xs),
+                "minY": min(ys),
+                "maxY": max(ys),
             },
         }
 

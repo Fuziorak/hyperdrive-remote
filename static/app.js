@@ -242,9 +242,9 @@
     return state.track.map;
   }
 
-  function mapProject(x, y, bounds, pad = 28) {
-    const w = 400;
-    const h = 320;
+  function mapProject(x, y, bounds, pad = 36) {
+    const w = 420;
+    const h = 360;
     const minX = bounds?.minX ?? 0;
     const maxX = bounds?.maxX ?? 1;
     const minY = bounds?.minY ?? 0;
@@ -260,12 +260,32 @@
     };
   }
 
+  function pointsToSvg(points, bounds) {
+    if (!points?.length) return "";
+    return points
+      .map((p, i) => {
+        const q = mapProject(p.x, p.y, bounds);
+        return `${i === 0 ? "M" : "L"}${q.x.toFixed(1)} ${q.y.toFixed(1)}`;
+      })
+      .join(" ");
+  }
+
+  function segmentPoints(seg) {
+    if (Array.isArray(seg.path) && seg.path.length >= 2) return seg.path;
+    return [
+      { x: seg.x0, y: seg.y0 },
+      { x: seg.x1, y: seg.y1 },
+    ];
+  }
+
   function renderTrackMap() {
     const status = $("mapStatus");
     const startLabel = $("mapStartLabel");
     const posLabel = $("mapPosLabel");
     const latLabel = $("mapLatencyLabel");
+    const base = $("mapTrackBase");
     const g = $("mapSegments");
+    const labels = $("mapLabels");
     const car = $("mapCar");
     const map = activeTrackMap();
     const segs = map?.segments || [];
@@ -284,7 +304,7 @@
       status.textContent = `Course map · segment ${state.track.currentSegment}`;
     } else if (segs.length) {
       const cname = state.track.courseName ? ` · ${state.track.courseName}` : "";
-      status.textContent = `Map prête${cname} · ${segs.length} segments · clic = départ`;
+      status.textContent = `Dessin prêt${cname} · ${segs.length} segments · clic = départ`;
     } else {
       status.textContent = "Aucune map — lance un mapping ou charge une course sauvée";
     }
@@ -299,7 +319,9 @@
       latLabel.textContent = latLabel.textContent || "—";
     }
 
+    if (base) base.innerHTML = "";
     g.innerHTML = "";
+    if (labels) labels.innerHTML = "";
     if (!segs.length) {
       car.hidden = true;
       return;
@@ -307,16 +329,32 @@
 
     const bounds = map.bounds || {};
     const highlightId = state.track.currentSegment;
+    const fullPath =
+      Array.isArray(map.path) && map.path.length >= 2
+        ? map.path
+        : segs.flatMap((seg, i) => {
+            const pts = segmentPoints(seg);
+            return i === 0 ? pts : pts.slice(1);
+          });
+
+    if (base && fullPath.length >= 2) {
+      const d = pointsToSvg(fullPath, bounds);
+      const outline = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      outline.setAttribute("d", d);
+      outline.setAttribute("class", "map-track-outline");
+      const lane = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      lane.setAttribute("d", d);
+      lane.setAttribute("class", "map-track-lane");
+      base.appendChild(outline);
+      base.appendChild(lane);
+    }
+
     segs.forEach((seg) => {
-      const p0 = mapProject(seg.x0, seg.y0, bounds);
-      const p1 = mapProject(seg.x1, seg.y1, bounds);
-      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-      line.setAttribute("x1", p0.x);
-      line.setAttribute("y1", p0.y);
-      line.setAttribute("x2", p1.x);
-      line.setAttribute("y2", p1.y);
+      const pts = segmentPoints(seg);
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      line.setAttribute("d", pointsToSvg(pts, bounds));
       line.setAttribute("data-id", String(seg.id));
-      line.classList.add("map-seg");
+      line.classList.add("map-seg", `turn-${seg.turn || "straight"}`);
       if (!state.track.mapping && seg.id === state.track.startSegment) line.classList.add("is-start");
       if (seg.id === highlightId) line.classList.add("is-current");
       if (!state.track.mapping) {
@@ -336,13 +374,27 @@
         });
       }
       g.appendChild(line);
+
+      if (labels && pts.length) {
+        const mid = pts[Math.floor(pts.length / 2)];
+        const q = mapProject(mid.x, mid.y, bounds);
+        const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        t.setAttribute("x", q.x.toFixed(1));
+        t.setAttribute("y", (q.y - 8).toFixed(1));
+        t.setAttribute("text-anchor", "middle");
+        t.setAttribute("class", "map-seg-label");
+        t.textContent = String(seg.id);
+        labels.appendChild(t);
+      }
     });
 
     const cur = segs[state.track.currentSegment] || segs[0];
     if (cur) {
-      const mid = mapProject((cur.x0 + cur.x1) / 2, (cur.y0 + cur.y1) / 2, bounds);
-      car.setAttribute("cx", mid.x);
-      car.setAttribute("cy", mid.y);
+      const pts = segmentPoints(cur);
+      const mid = pts[Math.floor(pts.length / 2)];
+      const q = mapProject(mid.x, mid.y, bounds);
+      car.setAttribute("cx", q.x);
+      car.setAttribute("cy", q.y);
       car.hidden = false;
     } else {
       car.hidden = true;
