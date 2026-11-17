@@ -16,6 +16,7 @@ import paho.mqtt.client as mqtt
 
 import debug_log
 from mqtt_util import mqtt_rc_ok, mqtt_rc_str
+from track_map import TrackController
 
 Listener = Callable[[dict[str, Any]], None]
 
@@ -67,6 +68,7 @@ class MqttBridge:
         self._connect_started_at = 0.0
         self._reconnect_failures = 0
         self._reconnect_pending = False
+        self.track = TrackController(self._emit)
         self._start_watchdog()
 
     # ----- public API used by app.py -----
@@ -136,6 +138,7 @@ class MqttBridge:
                 "hold": dict(self._hold_enabled),
                 "desired": {k: dict(v) for k, v in self._desired.items()},
                 "vehicles": dict(self._vehicles),
+                "track": self.track.snapshot(),
             }
 
     def connect_broker(self, force: bool = False) -> dict[str, Any]:
@@ -358,6 +361,44 @@ class MqttBridge:
 
     def panic_stop(self, vehicle_id: str) -> None:
         self.set_speed(vehicle_id, 0, 2000)
+
+    def start_latency_test(self, vehicle_id: str, max_speed: int = 1000, accel: int = 2000) -> dict[str, Any]:
+        self._subscribe_vehicle(vehicle_id)
+        self.track.start_latency_test(vehicle_id)
+        self.set_speed(vehicle_id, max_speed, accel)
+        return {"ok": True, "vehicleId": vehicle_id}
+
+    def start_mapping(self, vehicle_id: str, cruise_speed: int = 450) -> dict[str, Any]:
+        self._subscribe_vehicle(vehicle_id)
+        out = self.track.start_mapping(vehicle_id)
+        self.set_speed(vehicle_id, cruise_speed, 1000)
+        return out
+
+    def stop_mapping(self, finalize: bool = False) -> dict[str, Any]:
+        vid = self.track.mapping_vehicle
+        out = self.track.stop_mapping(finalize=finalize)
+        if vid:
+            try:
+                self.panic_stop(vid)
+            except Exception:
+                pass
+        return out
+
+    def start_mapped_race(self, vehicle_id: str) -> dict[str, Any]:
+        self._subscribe_vehicle(vehicle_id)
+        out = self.track.start_race(vehicle_id)
+        self.set_speed(vehicle_id, int(out["targetSpeed"]), 1400)
+        return out
+
+    def stop_mapped_race(self) -> dict[str, Any]:
+        vid = self.track.race_vehicle
+        out = self.track.stop_race()
+        if vid:
+            try:
+                self.panic_stop(vid)
+            except Exception:
+                pass
+        return out
 
     def assert_control(self, vehicle_id: str) -> dict[str, Any]:
         cfg = self._desired.get(vehicle_id) or {}
@@ -743,13 +784,15 @@ class MqttBridge:
             if not vid or vid in {"I", "D"}:
                 return
             self._upsert_vehicle(vid)
+            leaf = parts[-1]
+            parent = parts[-2] if len(parts) >= 2 else ""
+            val = payload.get("value") if isinstance(payload, dict) else None
+            changed = False
+            snap: dict[str, Any] | None = None
+            wd: tuple[str, float, float, Any] | None = None
             with self._lock:
                 v = self._vehicles.setdefault(vid, {"id": vid, "connected": False, "status": "unknown"})
                 v["lastSeen"] = time.time()
-                leaf = parts[-1]
-                parent = parts[-2] if len(parts) >= 2 else ""
-                val = payload.get("value") if isinstance(payload, dict) else None
-                changed = False
                 if leaf == "connection" or parent == "connection":
                     if isinstance(val, bool):
                         v["connected"] = val
@@ -780,7 +823,46 @@ class MqttBridge:
                     if isinstance(val, (int, float)):
                         v["rssi"] = int(val)
                         changed = True
+                elif leaf == "wheelDistance":
+                    left = right = None
+                    if isinstance(val, dict):
+                        left = val.get("left")
+                        right = val.get("right")
+                    if left is not None and right is not None:
+                        v["wheelDistance"] = {"left": left, "right": right}
+                        changed = True
+                        wd = (
+                            vid,
+                            float(left),
+                            float(right),
+                            payload.get("timestamp") if isinstance(payload, dict) else None,
+                        )
                 snap = dict(v)
-            # Only push UI updates for meaningful telemetry (not every battery tick flood via WS logs)
-            if changed and leaf in {"status", "connection", "speed", "onTrack", "level", "rssi"}:
+            # wheelDistance handled outside lock (may set_speed for race / latency stop)
+            if wd is not None:
+                pending_latency = self.track.latency_active and self.track.latency_vehicle == vid
+                was_mapping = self.track.mapping and self.track.mapping_vehicle == vid
+                in_race = self.track.race_active and self.track.race_vehicle == vid
+                self.track.on_wheel_distance(wd[0], wd[1], wd[2], wd[3])
+                if pending_latency and self.track.latency_result:
+                    try:
+                        self.panic_stop(vid)
+                    except Exception:
+                        pass
+                elif was_mapping and not self.track.mapping:
+                    try:
+                        self.panic_stop(vid)
+                    except Exception:
+                        pass
+                elif in_race and self.track.race_active:
+                    try:
+                        segs = (self.track.map or {}).get("segments") or []
+                        if segs:
+                            spd = int(segs[self.track.current_segment].get("maxSpeed", 700))
+                            self.set_speed(vid, spd, 1400)
+                    except Exception as exc:
+                        debug_log.warn("mqtt", "race speed apply failed", error=str(exc))
+            if changed and snap is not None and leaf in {
+                "status", "connection", "speed", "onTrack", "level", "rssi", "wheelDistance",
+            }:
                 self._emit({"type": "vehicleUpdate", "vehicleId": vid, "state": snap})

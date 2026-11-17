@@ -50,6 +50,15 @@ def _broadcast(event: dict[str, Any]) -> None:
         "assertControl",
         "holdChanged",
         "subscription",
+        "mappingStarted",
+        "mappingComplete",
+        "mappingStopped",
+        "latencyResult",
+        "raceStarted",
+        "raceStopped",
+        "mapPosition",
+        "mapStartSegment",
+        "mapUpdated",
     }:
         debug_log.info("event", f"broadcast {et}", event=event)
     elif et == "mqttOut":
@@ -307,6 +316,93 @@ def api_hold(vehicle_id: str):
     try:
         orch.set_hold(vehicle_id, enabled=enabled, interval_s=max(0.3, min(10.0, interval)))
         return jsonify({"ok": True, "state": orch.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.get("/api/track")
+def api_track():
+    return jsonify({"ok": True, "track": orch.track.snapshot()})
+
+
+@app.post("/api/track/latency")
+def api_track_latency():
+    data = request.get_json(silent=True) or {}
+    vehicle_id = str(data.get("vehicleId") or "").strip()
+    if not vehicle_id:
+        return jsonify({"ok": False, "error": "vehicleId requis"}), 400
+    try:
+        out = orch.start_latency_test(
+            vehicle_id,
+            max_speed=int(data.get("maxSpeed", 1000)),
+            accel=int(data.get("accel", 2000)),
+        )
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/mapping/start")
+def api_track_mapping_start():
+    data = request.get_json(silent=True) or {}
+    vehicle_id = str(data.get("vehicleId") or "").strip()
+    if not vehicle_id:
+        return jsonify({"ok": False, "error": "vehicleId requis"}), 400
+    try:
+        out = orch.start_mapping(vehicle_id, cruise_speed=int(data.get("cruiseSpeed", 450)))
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/mapping/stop")
+def api_track_mapping_stop():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.stop_mapping(finalize=bool(data.get("finalize", False)))
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/start-segment")
+def api_track_start_segment():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_start_segment(int(data.get("index", 0)))
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/segment-speed")
+def api_track_segment_speed():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_segment_speed(int(data.get("index", 0)), int(data.get("maxSpeed", 700)))
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/race/start")
+def api_track_race_start():
+    data = request.get_json(silent=True) or {}
+    vehicle_id = str(data.get("vehicleId") or "").strip()
+    if not vehicle_id:
+        return jsonify({"ok": False, "error": "vehicleId requis"}), 400
+    try:
+        out = orch.start_mapped_race(vehicle_id)
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/race/stop")
+def api_track_race_stop():
+    try:
+        out = orch.stop_mapped_race()
+        return jsonify({**out, "track": orch.track.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 

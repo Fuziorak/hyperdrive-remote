@@ -70,6 +70,15 @@
       laps: [],
       raf: null,
     },
+    track: {
+      mapping: false,
+      raceActive: false,
+      startSegment: 0,
+      currentSegment: 0,
+      map: null,
+      latencyResult: null,
+      rawCount: 0,
+    },
   };
 
   const $ = (id) => document.getElementById(id);
@@ -183,13 +192,125 @@
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
   }
 
+  // ---------------- track map ----------------
+
+  function applyTrackSnapshot(track) {
+    if (!track) return;
+    state.track.mapping = !!track.mapping;
+    state.track.raceActive = !!track.raceActive;
+    state.track.startSegment = track.startSegment ?? 0;
+    state.track.currentSegment = track.currentSegment ?? 0;
+    state.track.map = track.map || null;
+    state.track.latencyResult = track.latencyResult || null;
+    state.track.rawCount = track.rawCount || 0;
+    renderTrackMap();
+  }
+
+  function mapProject(x, y, bounds, pad = 28) {
+    const w = 400;
+    const h = 320;
+    const minX = bounds?.minX ?? 0;
+    const maxX = bounds?.maxX ?? 1;
+    const minY = bounds?.minY ?? 0;
+    const maxY = bounds?.maxY ?? 1;
+    const spanX = Math.max(1e-6, maxX - minX);
+    const spanY = Math.max(1e-6, maxY - minY);
+    const scale = Math.min((w - pad * 2) / spanX, (h - pad * 2) / spanY);
+    const ox = (w - spanX * scale) / 2;
+    const oy = (h - spanY * scale) / 2;
+    return {
+      x: ox + (x - minX) * scale,
+      y: oy + (y - minY) * scale,
+    };
+  }
+
+  function renderTrackMap() {
+    const status = $("mapStatus");
+    const startLabel = $("mapStartLabel");
+    const posLabel = $("mapPosLabel");
+    const latLabel = $("mapLatencyLabel");
+    const g = $("mapSegments");
+    const car = $("mapCar");
+    const map = state.track.map;
+    const segs = map?.segments || [];
+
+    if (state.track.mapping) {
+      status.textContent = `Mapping en cours… ${state.track.rawCount} segments (1ʳᵉ mesure ignorée)`;
+    } else if (state.track.raceActive) {
+      status.textContent = `Course map · segment ${state.track.currentSegment}`;
+    } else if (segs.length) {
+      status.textContent = `Map prête · ${segs.length} segments · clic = départ`;
+    } else {
+      status.textContent = "Aucune map — lance un mapping depuis la piste A";
+    }
+
+    startLabel.textContent = segs.length ? String(state.track.startSegment) : "—";
+    posLabel.textContent = segs.length ? String(state.track.currentSegment) : "—";
+    if (state.track.latencyResult) {
+      latLabel.textContent = `${state.track.latencyResult.elapsedMs} ms`;
+    } else if (state.track.latencyResult === null && $("mapLatencyLabel").dataset.pending === "1") {
+      latLabel.textContent = "…";
+    } else {
+      latLabel.textContent = latLabel.textContent || "—";
+    }
+
+    g.innerHTML = "";
+    if (!segs.length) {
+      car.hidden = true;
+      return;
+    }
+
+    const bounds = map.bounds || {};
+    segs.forEach((seg) => {
+      const p0 = mapProject(seg.x0, seg.y0, bounds);
+      const p1 = mapProject(seg.x1, seg.y1, bounds);
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", p0.x);
+      line.setAttribute("y1", p0.y);
+      line.setAttribute("x2", p1.x);
+      line.setAttribute("y2", p1.y);
+      line.setAttribute("data-id", String(seg.id));
+      line.classList.add("map-seg");
+      if (seg.id === state.track.startSegment) line.classList.add("is-start");
+      if (seg.id === state.track.currentSegment) line.classList.add("is-current");
+      line.addEventListener("click", async () => {
+        try {
+          const data = await api("/api/track/start-segment", {
+            method: "POST",
+            body: JSON.stringify({ index: seg.id }),
+          });
+          applyTrackSnapshot(data.track);
+          $("mapSegIndex").value = String(seg.id);
+          $("mapSegSpeed").value = String(seg.maxSpeed ?? 700);
+          toast(`Départ = segment ${seg.id}`);
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+      g.appendChild(line);
+    });
+
+    const cur = segs[state.track.currentSegment] || segs[0];
+    if (cur) {
+      const mid = mapProject((cur.x0 + cur.x1) / 2, (cur.y0 + cur.y1) / 2, bounds);
+      car.setAttribute("cx", mid.x);
+      car.setAttribute("cy", mid.y);
+      car.hidden = false;
+    } else {
+      car.hidden = true;
+    }
+
+    const idx = Number($("mapSegIndex").value) || 0;
+    if (segs[idx]) $("mapSegSpeed").value = String(segs[idx].maxSpeed ?? 700);
+  }
+
   // ---------------- fleet / slots ----------------
 
   function syncCockpitLayout() {
-    const root = $("cockpits");
-    const hasB = !!state.slots.B;
-    root.classList.toggle("single", !hasB);
-    cockpitEl("B").hidden = !hasB;
+    // Map remplace l'ancien slot B à droite ; B reste sous A (colonne scrollable).
+    const b = cockpitEl("B");
+    b.hidden = false;
+    b.classList.toggle("empty-slot", !state.slots.B);
   }
 
   function assignSlot(slot, vehicleId, { quiet } = {}) {
@@ -354,6 +475,11 @@
     root.querySelector(".t-speed").textContent = v.speed != null ? String(v.speed) : "—";
     root.querySelector(".t-track").textContent = v.onTrack == null ? "—" : (v.onTrack ? "oui" : "non");
     root.querySelector(".t-rssi").textContent = v.rssi != null ? String(v.rssi) : "—";
+    const wh = root.querySelector(".t-wheels");
+    if (wh) {
+      const wd = v.wheelDistance;
+      wh.textContent = wd ? `${wd.left} / ${wd.right}` : "—";
+    }
   }
 
   function refreshCockpit(slot) {
@@ -1009,6 +1135,7 @@
     if (snap.hostId) $("hostId").value = snap.hostId;
     if (snap.mqttUsername != null) $("mqttUsername").value = snap.mqttUsername;
     if (snap.callerId) $("callerIdLabel").textContent = snap.callerId;
+    if (snap.track) applyTrackSnapshot(snap.track);
     renderVehicles();
     refreshCockpit("A");
     refreshCockpit("B");
@@ -1204,6 +1331,78 @@
         state.hold[msg.vehicleId] = !!msg.enabled;
         refreshCockpit("A");
         refreshCockpit("B");
+        break;
+      case "wheelDistance": {
+        const id = msg.vehicleId;
+        if (state.vehicles[id]) {
+          state.vehicles[id].wheelDistance = { left: msg.left, right: msg.right };
+          if (state.slots.A === id) updateTelemetry("A");
+          if (state.slots.B === id) updateTelemetry("B");
+        }
+        break;
+      }
+      case "mappingStarted":
+        state.track.mapping = true;
+        state.track.rawCount = 0;
+        toast(`Mapping ${msg.vehicleId}`);
+        renderTrackMap();
+        break;
+      case "mappingSkippedFirst":
+        logLine("in", "Mapping: 1ʳᵉ mesure wheelDistance ignorée");
+        break;
+      case "mappingProgress":
+        state.track.rawCount = msg.count || 0;
+        renderTrackMap();
+        break;
+      case "mappingComplete":
+        state.track.mapping = false;
+        state.track.map = msg.map || null;
+        toast("Tour mappé — map prête");
+        renderTrackMap();
+        break;
+      case "mappingStopped":
+        state.track.mapping = false;
+        if (msg.map) state.track.map = msg.map;
+        renderTrackMap();
+        break;
+      case "latencyStarted":
+        $("mapLatencyLabel").dataset.pending = "1";
+        $("mapLatencyLabel").textContent = "…";
+        toast("Test latence…");
+        break;
+      case "latencyResult":
+        state.track.latencyResult = msg.result || null;
+        $("mapLatencyLabel").dataset.pending = "0";
+        if (msg.result) {
+          $("mapLatencyLabel").textContent = `${msg.result.elapsedMs} ms`;
+          toast(`Latence ${msg.result.elapsedMs} ms`);
+          logLine("in", `Latence wheelDistance: ${msg.result.elapsedMs} ms`);
+        }
+        break;
+      case "raceStarted":
+        state.track.raceActive = true;
+        state.track.currentSegment = msg.currentSegment ?? state.track.startSegment;
+        toast("Course map démarrée");
+        renderTrackMap();
+        break;
+      case "raceStopped":
+        state.track.raceActive = false;
+        toast("Course map stoppée");
+        renderTrackMap();
+        break;
+      case "mapPosition":
+        state.track.currentSegment = msg.currentSegment ?? 0;
+        state.track.startSegment = msg.startSegment ?? state.track.startSegment;
+        renderTrackMap();
+        break;
+      case "mapStartSegment":
+        state.track.startSegment = msg.startSegment ?? 0;
+        state.track.currentSegment = msg.currentSegment ?? state.track.startSegment;
+        renderTrackMap();
+        break;
+      case "mapUpdated":
+        state.track.map = msg.map || state.track.map;
+        renderTrackMap();
         break;
       default:
         break;
@@ -1406,6 +1605,88 @@
 
   $("btnManualDrive").addEventListener("click", () => {
     setManualDrive(!state.manualDrive);
+  });
+
+  $("btnLatency").addEventListener("click", async () => {
+    try {
+      const id = requireSlot("A");
+      $("mapLatencyLabel").dataset.pending = "1";
+      $("mapLatencyLabel").textContent = "…";
+      const data = await api("/api/track/latency", {
+        method: "POST",
+        body: JSON.stringify({ vehicleId: id, maxSpeed: 1000, accel: 2000 }),
+      });
+      applyTrackSnapshot(data.track);
+      toast("Accel max → stop au 1er wheelDistance");
+    } catch (err) {
+      if (err.message !== "no vehicle") toast(err.message);
+    }
+  });
+
+  $("btnMapStart").addEventListener("click", async () => {
+    try {
+      const id = requireSlot("A");
+      const data = await api("/api/track/mapping/start", {
+        method: "POST",
+        body: JSON.stringify({ vehicleId: id, cruiseSpeed: 450 }),
+      });
+      applyTrackSnapshot(data.track);
+      toast("Mapping: tour complet jusqu’à répétition");
+    } catch (err) {
+      if (err.message !== "no vehicle") toast(err.message);
+    }
+  });
+
+  $("btnMapStop").addEventListener("click", async () => {
+    try {
+      const data = await api("/api/track/mapping/stop", {
+        method: "POST",
+        body: JSON.stringify({ finalize: true }),
+      });
+      applyTrackSnapshot(data.track);
+      toast("Mapping arrêté");
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnRaceMapped").addEventListener("click", async () => {
+    try {
+      const id = requireSlot("A");
+      const data = await api("/api/track/race/start", {
+        method: "POST",
+        body: JSON.stringify({ vehicleId: id }),
+      });
+      applyTrackSnapshot(data.track);
+      toast(`Course depuis segment ${data.currentSegment}`);
+    } catch (err) {
+      if (err.message !== "no vehicle") toast(err.message);
+    }
+  });
+
+  $("btnRaceMappedStop").addEventListener("click", async () => {
+    try {
+      const data = await api("/api/track/race/stop", { method: "POST", body: "{}" });
+      applyTrackSnapshot(data.track);
+      toast("Course map stoppée");
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
+  $("btnMapSegSpeed").addEventListener("click", async () => {
+    try {
+      const index = Number($("mapSegIndex").value) || 0;
+      const maxSpeed = Number($("mapSegSpeed").value) || 700;
+      const data = await api("/api/track/segment-speed", {
+        method: "POST",
+        body: JSON.stringify({ index, maxSpeed }),
+      });
+      applyTrackSnapshot(data.track);
+      toast(`Segment ${index} → ${maxSpeed}`);
+    } catch (err) {
+      toast(err.message);
+    }
   });
 
   async function boot() {

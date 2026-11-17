@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
   <!-- Local CSS only: Google Fonts block page parse on lab Wi‑Fi (no Internet). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261110a" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261117a" />
 </head>
 <body>
   <div class="noise" aria-hidden="true"></div>
@@ -120,152 +120,194 @@
       </details>
     </section>
 
-    <section class="cockpits" id="cockpits">
-      <article class="panel cockpit" data-slot="A">
-        <div class="cockpit-head">
-          <div>
-            <p class="slot-tag">Piste A · principal</p>
-            <h2 class="cockpit-title">Libre</h2>
-            <p class="cockpit-id">Sélectionne un véhicule</p>
-          </div>
-          <div class="btn-row tight">
-            <button class="btn primary btn-connect" type="button">Connecter</button>
-            <button class="btn ghost btn-disconnect" type="button">Off</button>
-            <button class="btn accent btn-assert" type="button">Réappliquer</button>
-            <button class="btn danger btn-panic" type="button">STOP</button>
-            <button class="btn ghost btn-clear-slot" type="button">Retirer</button>
-          </div>
-        </div>
-        <div class="hold-bar compact">
-          <label class="hold-toggle" title="Décoché : chaque commande est envoyée une seule fois. Coché : la dernière vitesse est renvoyée ~3×/s pour plus de robustesse.">
-            <input class="hold-toggle-input" type="checkbox" />
-            <span>Renvoyer la vitesse en boucle (robustesse)</span>
-          </label>
-          <p class="hold-hint">Décoché = envoi unique à chaque changement · Coché = republication régulière de la dernière vitesse</p>
-        </div>
-        <div class="telemetry">
-          <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
-          <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
-          <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
-          <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
-          <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
-        </div>
-        <div class="control-grid">
-          <div class="card-block">
-            <h3>Vitesse</h3>
-            <div class="slider-block">
-              <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
-              <div class="slider-meta">
-                <output class="speed-value">0</output>
-                <span>mm/s ≈</span>
-              </div>
-            </div>
-            <label class="inline">
-              Accélération
-              <input class="accel-input" type="number" min="0" max="2500" value="1400" />
-            </label>
-            <div class="btn-row tight speed-presets"></div>
-          </div>
-          <div class="card-block">
-            <h3>Voie</h3>
-            <div class="slider-block">
-              <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
-              <div class="slider-meta">
-                <output class="lane-value">0</output>
-                <span>offset</span>
-              </div>
+    <section class="drive-zone" id="cockpits">
+      <div class="drive-column" id="driveColumn">
+        <article class="panel cockpit" data-slot="A">
+          <div class="cockpit-head">
+            <div>
+              <p class="slot-tag">Piste A · principal</p>
+              <h2 class="cockpit-title">Libre</h2>
+              <p class="cockpit-id">Sélectionne un véhicule</p>
             </div>
             <div class="btn-row tight">
-              <button class="btn secondary btn-lane" type="button">Changer de voie</button>
-              <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
+              <button class="btn primary btn-connect" type="button">Connecter</button>
+              <button class="btn ghost btn-disconnect" type="button">Off</button>
+              <button class="btn accent btn-assert" type="button">Réappliquer</button>
+              <button class="btn danger btn-panic" type="button">STOP</button>
+              <button class="btn ghost btn-clear-slot" type="button">Retirer</button>
             </div>
           </div>
-          <div class="card-block span-2">
-            <h3>Feux</h3>
-            <div class="presets light-presets"></div>
-            <details class="advanced">
-              <summary>Réglages feux avancés</summary>
-              <div class="lights-grid"></div>
-              <div class="btn-row" style="margin-top:0.7rem">
-                <button class="btn accent btn-lights" type="button">Envoyer feux</button>
-              </div>
-            </details>
+          <div class="hold-bar compact">
+            <label class="hold-toggle" title="Décoché : chaque commande est envoyée une seule fois. Coché : la dernière vitesse est renvoyée ~3×/s pour plus de robustesse.">
+              <input class="hold-toggle-input" type="checkbox" />
+              <span>Renvoyer la vitesse en boucle (robustesse)</span>
+            </label>
+            <p class="hold-hint">Décoché = envoi unique à chaque changement · Coché = republication régulière de la dernière vitesse</p>
           </div>
-        </div>
-      </article>
+          <div class="telemetry">
+            <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
+            <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
+            <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
+            <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
+            <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
+            <div class="metric"><span>Roues L/R</span><strong class="t-wheels">—</strong></div>
+          </div>
+          <div class="control-grid">
+            <div class="card-block">
+              <h3>Vitesse</h3>
+              <div class="slider-block">
+                <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
+                <div class="slider-meta">
+                  <output class="speed-value">0</output>
+                  <span>mm/s ≈</span>
+                </div>
+              </div>
+              <label class="inline">
+                Accélération
+                <input class="accel-input" type="number" min="0" max="2500" value="1400" />
+              </label>
+              <div class="btn-row tight speed-presets"></div>
+            </div>
+            <div class="card-block">
+              <h3>Voie</h3>
+              <div class="slider-block">
+                <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
+                <div class="slider-meta">
+                  <output class="lane-value">0</output>
+                  <span>offset</span>
+                </div>
+              </div>
+              <div class="btn-row tight">
+                <button class="btn secondary btn-lane" type="button">Changer de voie</button>
+                <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
+              </div>
+            </div>
+            <div class="card-block span-2">
+              <h3>Feux</h3>
+              <div class="presets light-presets"></div>
+              <details class="advanced">
+                <summary>Réglages feux avancés</summary>
+                <div class="lights-grid"></div>
+                <div class="btn-row" style="margin-top:0.7rem">
+                  <button class="btn accent btn-lights" type="button">Envoyer feux</button>
+                </div>
+              </details>
+            </div>
+          </div>
+        </article>
 
-      <article class="panel cockpit" data-slot="B">
-        <div class="cockpit-head">
-          <div>
-            <p class="slot-tag slot-b">Piste B · optionnel</p>
-            <h2 class="cockpit-title">Libre</h2>
-            <p class="cockpit-id">Bouton +B sur un véhicule</p>
-          </div>
-          <div class="btn-row tight">
-            <button class="btn primary btn-connect" type="button">Connecter</button>
-            <button class="btn ghost btn-disconnect" type="button">Off</button>
-            <button class="btn accent btn-assert" type="button">Réappliquer</button>
-            <button class="btn danger btn-panic" type="button">STOP</button>
-            <button class="btn ghost btn-clear-slot" type="button">Retirer</button>
-          </div>
-        </div>
-        <div class="hold-bar compact">
-          <label class="hold-toggle" title="Décoché : chaque commande est envoyée une seule fois. Coché : la dernière vitesse est renvoyée ~3×/s pour plus de robustesse.">
-            <input class="hold-toggle-input" type="checkbox" />
-            <span>Renvoyer la vitesse en boucle (robustesse)</span>
-          </label>
-          <p class="hold-hint">Décoché = envoi unique à chaque changement · Coché = republication régulière de la dernière vitesse</p>
-        </div>
-        <div class="telemetry">
-          <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
-          <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
-          <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
-          <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
-          <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
-        </div>
-        <div class="control-grid">
-          <div class="card-block">
-            <h3>Vitesse</h3>
-            <div class="slider-block">
-              <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
-              <div class="slider-meta">
-                <output class="speed-value">0</output>
-                <span>mm/s ≈</span>
-              </div>
-            </div>
-            <label class="inline">
-              Accélération
-              <input class="accel-input" type="number" min="0" max="2500" value="1400" />
-            </label>
-            <div class="btn-row tight speed-presets"></div>
-          </div>
-          <div class="card-block">
-            <h3>Voie</h3>
-            <div class="slider-block">
-              <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
-              <div class="slider-meta">
-                <output class="lane-value">0</output>
-                <span>offset</span>
-              </div>
+        <article class="panel cockpit cockpit-b" data-slot="B">
+          <div class="cockpit-head">
+            <div>
+              <p class="slot-tag slot-b">Piste B · sous A (scroll)</p>
+              <h2 class="cockpit-title">Libre</h2>
+              <p class="cockpit-id">Bouton +B sur un véhicule</p>
             </div>
             <div class="btn-row tight">
-              <button class="btn secondary btn-lane" type="button">Changer de voie</button>
-              <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
+              <button class="btn primary btn-connect" type="button">Connecter</button>
+              <button class="btn ghost btn-disconnect" type="button">Off</button>
+              <button class="btn accent btn-assert" type="button">Réappliquer</button>
+              <button class="btn danger btn-panic" type="button">STOP</button>
+              <button class="btn ghost btn-clear-slot" type="button">Retirer</button>
             </div>
           </div>
-          <div class="card-block span-2">
-            <h3>Feux</h3>
-            <div class="presets light-presets"></div>
-            <details class="advanced">
-              <summary>Réglages feux avancés</summary>
-              <div class="lights-grid"></div>
-              <div class="btn-row" style="margin-top:0.7rem">
-                <button class="btn accent btn-lights" type="button">Envoyer feux</button>
-              </div>
-            </details>
+          <div class="hold-bar compact">
+            <label class="hold-toggle" title="Décoché : chaque commande est envoyée une seule fois. Coché : la dernière vitesse est renvoyée ~3×/s pour plus de robustesse.">
+              <input class="hold-toggle-input" type="checkbox" />
+              <span>Renvoyer la vitesse en boucle (robustesse)</span>
+            </label>
+            <p class="hold-hint">Décoché = envoi unique à chaque changement · Coché = republication régulière de la dernière vitesse</p>
           </div>
+          <div class="telemetry">
+            <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
+            <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
+            <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
+            <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
+            <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
+            <div class="metric"><span>Roues L/R</span><strong class="t-wheels">—</strong></div>
+          </div>
+          <div class="control-grid">
+            <div class="card-block">
+              <h3>Vitesse</h3>
+              <div class="slider-block">
+                <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
+                <div class="slider-meta">
+                  <output class="speed-value">0</output>
+                  <span>mm/s ≈</span>
+                </div>
+              </div>
+              <label class="inline">
+                Accélération
+                <input class="accel-input" type="number" min="0" max="2500" value="1400" />
+              </label>
+              <div class="btn-row tight speed-presets"></div>
+            </div>
+            <div class="card-block">
+              <h3>Voie</h3>
+              <div class="slider-block">
+                <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
+                <div class="slider-meta">
+                  <output class="lane-value">0</output>
+                  <span>offset</span>
+                </div>
+              </div>
+              <div class="btn-row tight">
+                <button class="btn secondary btn-lane" type="button">Changer de voie</button>
+                <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
+              </div>
+            </div>
+            <div class="card-block span-2">
+              <h3>Feux</h3>
+              <div class="presets light-presets"></div>
+              <details class="advanced">
+                <summary>Réglages feux avancés</summary>
+                <div class="lights-grid"></div>
+                <div class="btn-row" style="margin-top:0.7rem">
+                  <button class="btn accent btn-lights" type="button">Envoyer feux</button>
+                </div>
+              </details>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <aside class="panel map-panel" id="mapPanel">
+        <div class="panel-head">
+          <h2>Map piste</h2>
+          <p>wheelDistance · départ · course</p>
         </div>
-      </article>
+        <div class="map-status" id="mapStatus">Aucune map — lance un mapping depuis la piste A</div>
+        <div class="map-actions btn-row tight">
+          <button id="btnLatency" class="btn secondary" type="button">Test latence</button>
+          <button id="btnMapStart" class="btn accent" type="button">Mapper</button>
+          <button id="btnMapStop" class="btn ghost" type="button">Stop map</button>
+          <button id="btnRaceMapped" class="btn primary" type="button">Course map</button>
+          <button id="btnRaceMappedStop" class="btn danger" type="button">Stop course</button>
+        </div>
+        <div class="map-meta">
+          <span>Départ <strong id="mapStartLabel">—</strong></span>
+          <span>Position <strong id="mapPosLabel">—</strong></span>
+          <span>Latence <strong id="mapLatencyLabel">—</strong></span>
+        </div>
+        <div class="map-canvas-wrap">
+          <svg id="mapSvg" class="map-svg" viewBox="0 0 400 320" role="img" aria-label="Carte de la piste">
+            <g id="mapSegments"></g>
+            <circle id="mapCar" class="map-car" r="7" cx="-20" cy="-20" hidden></circle>
+          </svg>
+        </div>
+        <div class="map-seg-tools">
+          <label>
+            Segment
+            <input id="mapSegIndex" type="number" min="0" value="0" />
+          </label>
+          <label>
+            Vitesse max
+            <input id="mapSegSpeed" type="number" min="0" max="1000" step="10" value="700" />
+          </label>
+          <button id="btnMapSegSpeed" class="btn secondary" type="button">Appliquer vitesse</button>
+        </div>
+        <p class="hint map-hint">Clic sur un segment = zone de départ (rouge). Segment courant = surbrillance. droite &lt; gauche → virage intérieur droite.</p>
+      </aside>
     </section>
 
     <details class="panel advanced-panel">
@@ -322,6 +364,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261110a"></script>
+  <script src="/static/app.js?v=20261117a"></script>
 </body>
 </html>
