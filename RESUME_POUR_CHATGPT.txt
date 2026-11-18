@@ -1,0 +1,372 @@
+================================================================================
+HYPERDRIVE REMOTE — RÉSUMÉ TECHNIQUE (pour ChatGPT / contexte projet)
+UNIFR Robotics · Anki Overdrive via MQTT · Repo: github.com/Fuziorak/hyperdrive-remote
+================================================================================
+
+Ce fichier décrit COMMENT fonctionne le programme, QUELLES infos circulent
+(MQTT / HTTP / WebSocket / UI), et les notions utiles autour du mapping & course.
+
+
+--------------------------------------------------------------------------------
+1. BUT DU PROJET
+--------------------------------------------------------------------------------
+
+Interface web « remote » pour piloter des voitures Anki Overdrive sur le réseau
+lab UNIFR (SSID Wi‑Fi `hyperdrive`).
+
+Le remote :
+  - se connecte au broker MQTT du lab ;
+  - découvre / assigne jusqu’à 2 voitures (pistes A et B) ;
+  - envoie des commandes (vitesse, voie, feux, connect) ;
+  - affiche télémétrie et état ;
+  - mappe la piste via les événements `wheelDistance` ;
+  - lance une course automatique sur une map sauvegardée (vitesses par segment,
+    freinage anticipé, feux frein/accélération).
+
+Ce n’est PAS le firmware Anki : c’est un pont Flask + MQTT + UI navigateur.
+
+
+--------------------------------------------------------------------------------
+2. ARCHITECTURE GLOBALE
+--------------------------------------------------------------------------------
+
+  Navigateur (static/index.html + app.js + styles.css)
+       │  HTTP REST  +  WebSocket (/ws)
+       ▼
+  Flask (app.py)  — port local typique http://127.0.0.1:5050
+       │
+       ▼
+  mqtt_bridge.py (orchestrateur MQTT actif en lab)
+  + track_map.py (logique mapping / course / géométrie)
+       │  MQTT publish / subscribe
+       ▼
+  Broker lab : 10.42.0.1:1883
+       user souvent "Your_mom", mot de passe souvent vide
+       Host id lab : "hyperdrive"
+       │
+       ▼
+  Stack Anki Hyperdrive (host + véhicules BLE derrière le host)
+
+Fichiers clés :
+  - app.py           : API HTTP, WebSocket, démarrage
+  - mqtt_bridge.py   : client MQTT, intents, hold, course lights/brake timer
+  - track_map.py     : mapping 2 tours, maps, course auto, lookahead frein
+  - orchestrator.py  : variante / helpers feux (presets, channels)
+  - static/*         : UI
+  - maps/            : track.json, courses/*.json (données locales, pas toujours git)
+
+
+--------------------------------------------------------------------------------
+3. TOPICS MQTT — CE QU’ON REÇOIT (subscribe)
+--------------------------------------------------------------------------------
+
+Convention Hyperdrive observée :
+  Anki/<Domaine>/U/<id>/S/...   = State (état)
+  Anki/<Domaine>/U/<id>/E/...   = Event (événement)
+  Anki/<Domaine>/U/<id>/I/<callerId> = Intent (commande qu’ON publie)
+
+HOST (scan / présence) :
+  - Anki/Hosts/U/+/E/#
+  - Anki/Hosts/U/+/S/online
+  - Anki/Hosts/U/+/S/discover
+  - Anki/Hosts/U/+/E/vehicle/discovered/+
+    → découverte d’un véhicule (id, parfois modèle)
+
+VÉHICULES (après discover / sélection) :
+  - Anki/Vehicles/U/+/S/online
+  - Anki/Vehicles/U/+/S/status
+  - Anki/Vehicles/U/{id}/S/onTrack
+  - Anki/Vehicles/U/{id}/S/battery/level
+  - Anki/Vehicles/U/{id}/E/wheelDistance   ★ critique pour map/course/latence
+  - Anki/Vehicles/U/{id}/E/#               (autres events)
+
+Le code évite volontairement un flood type …/S/# global (batterie trop fréquent).
+
+Payload typique wheelDistance (valeur) :
+  { "left": <float>, "right": <float> }
+  = distance parcourue depuis le trait / mesure précédente.
+  Interprétation mapping :
+    right < left  → virage vers la DROITE
+    left  < right → virage vers la GAUCHE
+    ~égaux        → ligne droite
+
+Autres états véhicule mémorisés côté bridge (selon messages reçus) :
+  online, status/connection, onTrack, battery level, speed, rssi, wheelDistance
+
+
+--------------------------------------------------------------------------------
+4. TOPICS MQTT — CE QU’ON TRANSMET (publish intents)
+--------------------------------------------------------------------------------
+
+Caller ID : généré localement (ex. "rc-xxxxxxxx"), visible dans l’UI.
+
+Discover (scan) :
+  Topic : Anki/Hosts/U/I/{callerId}
+       (+ parfois Anki/Hosts/U/{hostId}/I/{callerId})
+  Payload : { "type": "discover", "payload": { "value": true|false } }
+
+Commandes véhicule :
+  Topic : Anki/Vehicles/U/{vehicleId}/I/{callerId}
+
+  Types principaux :
+  - connect : { "type":"connect", "payload":{ "value": true|false } }
+  - speed   : { "type":"speed",   "payload":{ "velocity": int, "acceleration": int } }
+              velocity typique 0..1000 (mm/s ≈ Anki), accel ex. 1000–2000
+  - lane    : { "type":"lane", "payload":{ "velocity", "acceleration", "offset",
+                                          éventuellement "offsetFromCenter" } }
+              offset voie environ -68..+68
+  - cancelLane : { "type":"cancelLane", "payload":{ "value": true } }
+  - lights  : { "type":"lights", "payload": { <channels> } }
+
+Canaux feux (LIGHT_CHANNELS) :
+  frontGreen, frontRed, tail, engineRed, engineGreen, engineBlue
+
+Chaque canal : { effect, start, end, frequency }
+  effects : off, steady, fade, pulse, flash, strobe
+
+Presets UI / course :
+  - off, green, red, blue, police
+  - tailFlash / Queue flash : queue en flash (freinage course)
+  - strobe : strobe (accélération course ; en course map le tail est coupé
+    pour ne pas garder la couleur frein)
+
+Hold (option cockpit) :
+  Si coché, le bridge republie périodiquement (~3×/s) la dernière vitesse
+  mémorisée pour robustesse MQTT. Sinon : un seul publish par changement.
+
+
+--------------------------------------------------------------------------------
+5. COUCHE HTTP / WEBSOCKET (UI ↔ Flask)
+--------------------------------------------------------------------------------
+
+UI → Flask (REST, exemples) :
+  GET  /api/state              snapshot global (mqtt, vehicles, track, …)
+  GET  /api/meta               meta feux / presets
+  POST /api/broker/connect     { host, port, username, password, hostId, … }
+  POST /api/broker/disconnect
+  GET  /api/broker/ping
+  POST /api/discover           { enable: bool }
+  POST /api/vehicles/manual    ajout ID manuel
+  POST /api/vehicles/<id>/connect | speed | lane | cancel-lane | lights |
+                               panic | assert | hold
+  POST /api/track/latency
+  POST /api/track/mapping/start | stop
+  POST /api/track/race/start | stop
+  POST /api/track/turn-slowdown | straight-max | lookahead
+  POST /api/track/part-count | rebuild | start-segment | segment-speed
+  GET/POST /api/track/courses[ /save|/load|/delete ]
+  Debug : /api/debug/*
+
+Flask → UI (WebSocket /ws) :
+  Messages JSON { "type": "...", ... } poussés en live, notamment :
+  - mqttConnected / mqttDisconnected / mqttError / mqttOut
+  - scanning, vehicleDiscovered, vehicleUpdate
+  - wheelDistance, mappingStarted/Progress/Complete/Cleared/Stopped
+  - mappingSkippedFirst, latencyStarted/Result
+  - mapPosition, mapUpdated, mapStartSegment
+  - raceStarted/Stopped, raceBrakeApplied, raceLights
+  - turnSlowdownSet, straightMaxSet, lookaheadSet
+  - courseSaved/Loaded/Deleted
+  - manualOverride (cockpit STOP/vitesse/voie coupe course/mapping/latence)
+  - holdChanged, assertControl, subscription, hello(+state)
+
+
+--------------------------------------------------------------------------------
+6. CE QUE L’INTERFACE AFFICHE
+--------------------------------------------------------------------------------
+
+Thème actuel : clair « tour de chronométrage » (hazard jaune + teal).
+
+Barre du haut :
+  - Marque Hyperdrive / UNIFR
+  - Focus véhicule (modèle, id, connecté, batterie, vitesse)
+  - Boutons Connecter, WASD, STOP
+  - État MQTT, scan, caller ID
+  - STOP ALL
+
+Rail :
+  - Garage : liste véhicules découverts, assignation A/B
+  - Chrono manuel : temps, tour, best, liste tours (local JS, pas MQTT)
+  - Profils : presets vitesse/voie/feux (localStorage + intégrés)
+
+Cockpits A et B :
+  - Titre / id assigné
+  - Connect On/Off, Sync (assert), STOP, retirer
+  - Hold vitesse
+  - Télémétrie : statut, batterie, vitesse, onTrack, RSSI, roues L/R
+  - Sliders vitesse / voie, presets vitesse, feux (presets + avancé)
+
+Panneau Map :
+  - Statut mapping / course
+  - Boutons Mapper, Stop map, Course map, Lancer, Stop, Latence
+  - SVG piste (segments colorés : droit / gauche / droite / départ / courant)
+  - Position voiture sur le tracé
+  - Curseurs course : vitesse droits, ralentissement virages, frein 2/3|3/4,
+    lookahead (nb bouts regardés)
+  - Sauver / charger / supprimer maps nommées
+  - (avancé) nb bouts, vitesse par segment, gain courbe, rebuild
+
+Bas de page (replié) :
+  - Réglages broker MQTT, rescanner, debug.log, journal MQTT
+
+
+--------------------------------------------------------------------------------
+7. CE QUE L’INTERFACE TRANSMET (actions utilisateur → système)
+--------------------------------------------------------------------------------
+
+Pilotage manuel :
+  - Connect / disconnect véhicule
+  - Vitesse + accélération → MQTT speed
+  - Voie (offset) → MQTT lane ; annuler → cancelLane
+  - Feux preset ou custom → MQTT lights
+  - Panic / STOP → speed 0 (+ coupe automation via yield_to_manual)
+  - Hold on/off → republication périodique vitesse
+  - Assert / Sync → republie connect + dernière vitesse/feux/voie mémorisés
+  - WASD : maintiens W/S vitesse, A/D voie, Espace défauts course (~700),
+    1/2 focus piste A/B
+
+Garage :
+  - Clic véhicule → assigne A (ou B), connect auto
+  - Boutons A/B pour forcer l’assignation
+  - Ajout manuel d’un ID
+
+Map / course auto (piste A typiquement) :
+  - Mapper : start mapping (+ partCount), cruise mapping plafonnée (~300)
+  - Stop map : arrête et peut effacer / remettre à 0
+  - Course map : choisir une map sauvegardée puis Lancer
+  - Curseurs réglages course envoyés avant / pendant via API track
+  - Latence : accel max puis stop au 1er wheelDistance, mesure elapsedMs
+
+Profils / chrono :
+  - Profils = configs locales appliquées via speed/lane/lights
+  - Chrono Départ/Tour/Fin/Reset = purement UI (pas publié MQTT)
+
+
+--------------------------------------------------------------------------------
+8. MAPPING DE PISTE (track_map.py) — LOGIQUE
+--------------------------------------------------------------------------------
+
+Source : événements wheelDistance pendant le mode mapping.
+
+Règles :
+  1) Première mesure après « Mapper » ignorée (souvent MQTT retenu / stale).
+  2) Tour 1 : accumule les bouts (segments left/right/turn/length).
+     Fermeture : assez de bouts (min ~3, ou partCount 1–50 fixé) ET
+     nouvelle mesure ≈ première (tolérance ratio ~1.1).
+  3) Tour 2 : chaque mesure doit refrapper celle du tour 1 (même tolérance).
+     Quand le tour 2 est complet → map finalisée.
+  4) Géométrie : arcs à partir de L/R, fermeture de boucle, optimisation
+     curve_gain pour éviter croisements ; dessin SVG dans l’UI.
+  5) Maps nommées dans maps/courses/*.json ; dernière map via last_course.txt.
+
+Clic sur un segment SVG : définit le segment de départ (startSegment).
+
+
+--------------------------------------------------------------------------------
+9. COURSE MAP AUTOMATIQUE
+--------------------------------------------------------------------------------
+
+Démarrage :
+  - charge map + réglages (droits, virages %, frein fraction, lookahead)
+  - start_race → set_speed entrée du segment courant
+  - à chaque wheelDistance : avance au segment suivant (match souple ~1.3)
+
+Vitesses :
+  - Lignes droites : curseur straightMaxSpeed (0–1000)
+  - Virages : base 500 × (1 − slowdown%/100), encore réduit si virage serré
+    (écart L/R / tightness)
+
+Freinage anticipé (pas de position continue Anki) :
+  - Sur un DROIT suivi d’un virage plus lent :
+    * entrée : vitesse droite (plein gaz)
+    * timer estimé à 2/3 ou 3/4 du temps de parcours du bout
+      (estimé longueur/vitesse, puis affiné par temps mesuré entre traits)
+    * à ce moment : set_speed vers vitesse virage + Queue flash
+  - Accélération (hausse de consigne) : preset strobe SANS feux arrière
+  - Freinage (baisse de consigne / mid-brake) : Queue flash (tail only)
+  - Stop course : feux off + panic stop
+
+Priorité cockpit :
+  Toute commande manuelle STOP / vitesse / voie (manual=True) appelle
+  yield_to_manual → coupe race, mapping et test latence pour ce véhicule.
+
+
+--------------------------------------------------------------------------------
+10. FLUX TYPIQUES (résumés)
+--------------------------------------------------------------------------------
+
+A) Pilotage simple
+  UI speed slider → POST /api/.../speed → MQTT intent speed → voiture bouge
+  → (optionnel) state/speed ou télémétrie → WS vehicleUpdate → UI métriques
+
+B) Mapping
+  Mapper → mapping=true, ignore 1er WD → WD accumulés → 2 tours OK
+  → map JSON + géométrie → SVG + possibilité sauver course
+
+C) Course auto
+  Charger map → Lancer → plan vitesse par segment → WD avance index
+  → timers frein mi-droit → lights flash/strobe → Stop course
+
+D) Latence
+  POST latency → speed max → 1er WD → stop + elapsedMs affiché
+
+
+--------------------------------------------------------------------------------
+11. DONNÉES PERSISTÉES
+--------------------------------------------------------------------------------
+
+Serveur :
+  - maps/track.json          map courante
+  - maps/courses/<nom>.json  maps nommées
+  - maps/last_course.txt     pointeur dernière map
+  - debug.log                journal debug réseau/MQTT
+
+Navigateur (localStorage) :
+  - slots A/B, hold flags, profils custom, parfois prefs UI
+
+
+--------------------------------------------------------------------------------
+12. CONTRAINTES LAB / PIÈGES UTILES
+--------------------------------------------------------------------------------
+
+- Il faut être sur le Wi‑Fi `hyperdrive` pour joindre 10.42.0.1.
+- Pas d’Internet sur ce SSID → pas de Google Fonts ; CSS fonts locales.
+- wheelDistance n’arrive qu’aux « traits » (pas de position continue) :
+  d’où le frein temporel à 2/3–3/4 plutôt qu’une vraie distance odomètre live.
+- Messages MQTT retained peuvent fausser le 1er sample → ignoré au mapping.
+- Deux clients qui publient des intents peuvent se marcher dessus → Assert/Sync
+  et Hold aident.
+- UI piste A = principale pour mapping/course ; B = second véhicule.
+
+
+--------------------------------------------------------------------------------
+13. STACK TECHNIQUE
+--------------------------------------------------------------------------------
+
+- Python 3.10+, Flask, flask-sock, paho-mqtt
+- Frontend : HTML/CSS/JS vanilla (pas de React)
+- Lancement : python app.py ou script/vbs Windows
+- Docs lab mentionnées dans README :
+  API http://10.42.0.1:9001 · Web http://10.42.0.1:18443
+
+
+--------------------------------------------------------------------------------
+14. GLOSSAIRE RAPIDE
+--------------------------------------------------------------------------------
+
+Intent     = commande MQTT publiée par le remote
+State (S/) = état courant véhicule/host
+Event (E/) = événement (ex. wheelDistance)
+Caller ID  = identifiant de cette instance de remote
+Piste A/B  = slots UI (max 2 voitures pilotées)
+Segment    = bout de piste entre deux mesures WD
+partCount  = nombre de bouts attendus (1–50)
+Hold       = republication périodique de la vitesse
+Assert     = republier le dernier état de contrôle désiré
+Queue flash= feux arrière flash (frein)
+Strobe     = effet strobe (accel course, sans tail)
+
+
+================================================================================
+Fin du résumé — généré pour coller dans ChatGPT comme contexte projet.
+================================================================================
