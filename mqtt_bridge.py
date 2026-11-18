@@ -323,7 +323,9 @@ class MqttBridge:
                 pass
 
     def _set_race_lights(self, vehicle_id: str, mode: str) -> None:
-        """Feux course : Queue flash au frein, Strobe à l'accélération."""
+        """Feux course : Queue flash uniquement au frein ; strobe sans arrière à l'accélération."""
+        from orchestrator import LIGHT_CHANNELS, _default_light
+
         mode_l = (mode or "").lower()
         if mode_l not in {"tailflash", "strobe", "off"}:
             return
@@ -331,7 +333,19 @@ class MqttBridge:
             return
         self._race_light_mode = mode_l
         try:
-            self.apply_light_preset(vehicle_id, mode_l)
+            if mode_l == "tailflash":
+                # Freinage : uniquement les feux arrière (queue flash)
+                self.apply_light_preset(vehicle_id, "tailflash")
+            elif mode_l == "strobe":
+                # Accélération : strobe sans queue / couleur frein
+                lights = {ch: _default_light("off") for ch in LIGHT_CHANNELS}
+                for ch in LIGHT_CHANNELS:
+                    if ch == "tail":
+                        continue
+                    lights[ch] = {"effect": "strobe", "start": 0, "end": 15, "frequency": 30}
+                self.set_lights(vehicle_id, lights)
+            else:
+                self.apply_light_preset(vehicle_id, "off")
             self._emit(
                 {
                     "type": "raceLights",
