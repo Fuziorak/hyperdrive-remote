@@ -404,6 +404,7 @@
     state.track.curveGain = track.curveGain ?? track.map?.curveGain ?? state.track.curveGain;
     if (state.track.partCount && $("mapPartCount")) {
       $("mapPartCount").value = String(state.track.partCount);
+      if ($("mapPartCountHint")) $("mapPartCountHint").textContent = String(state.track.partCount);
     }
     if ($("mapCurveGain") && state.track.curveGain != null) {
       $("mapCurveGain").value = String(state.track.curveGain);
@@ -2248,10 +2249,17 @@
     }
   });
 
+  $("mapPartCount")?.addEventListener("input", () => {
+    const n = Math.max(1, Math.min(50, Number($("mapPartCount").value) || 1));
+    if ($("mapPartCountHint")) $("mapPartCountHint").textContent = String(n);
+  });
+
   $("btnMapStart").addEventListener("click", async () => {
     try {
       const id = requireSlot("A");
-      const partCount = Math.max(1, Math.min(50, Number($("mapPartCount").value) || 1));
+      const partCount = Math.max(1, Math.min(50, Number($("mapPartCount")?.value) || 1));
+      if ($("mapPartCount")) $("mapPartCount").value = String(partCount);
+      if ($("mapPartCountHint")) $("mapPartCountHint").textContent = String(partCount);
       // Un seul appel atomique : évite qu'un part-count/rebuild sur une vieille map
       // interfère, et garde le mapping actif même si le publish vitesse rate.
       const data = await api("/api/track/mapping/start", {

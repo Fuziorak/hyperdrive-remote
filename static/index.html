@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261118b" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261118c" />
 </head>
 <body class="theme-dark">
   <div class="app-bg" aria-hidden="true"></div>
@@ -288,6 +288,14 @@
             <button type="button" class="btn ghost tiny" id="btnSegPopClose">Fermer</button>
           </div>
         </div>
+        <div class="map-mapping-setup">
+          <label class="slowdown-label">
+            Nombre de bouts (map)
+            <span class="slowdown-readout">Combien de traits sur un tour · <strong id="mapPartCountHint">8</strong></span>
+            <input id="mapPartCount" type="number" min="1" max="50" value="8" title="Nombre de segments de la piste (1–50)" />
+          </label>
+          <p class="hint">Le mapping fera 2 tours de ce nombre de bouts, puis comparera bout #0…#N.</p>
+        </div>
         <div class="map-actions btn-row tight">
           <button id="btnMapStart" class="btn accent" type="button">Mapper</button>
           <button id="btnMapStop" class="btn ghost" type="button">Stop map</button>
@@ -350,12 +358,12 @@
 
           <details class="advanced">
             <summary>Réglages map avancés</summary>
+            <p class="hint">Nb de bouts : réglé dans Pilotage (panneau Circuit), avant Mapper.</p>
             <div class="map-seg-tools">
-              <label>Nb bouts <input id="mapPartCount" type="number" min="1" max="50" value="8" /></label>
-              <button id="btnPartCount" class="btn secondary" type="button">Fixer</button>
               <label>Segment <input id="mapSegIndex" type="number" min="0" value="0" /></label>
               <label>Vitesse max <input id="mapSegSpeed" type="number" min="0" max="1000" step="10" value="700" /></label>
               <button id="btnMapSegSpeed" class="btn secondary" type="button">Appliquer</button>
+              <button id="btnPartCount" class="btn secondary" type="button" hidden>Fixer bouts</button>
             </div>
             <div class="map-curve-tools">
               <label>Gain auto <input id="mapCurveGain" type="number" min="0.5" max="8" step="0.1" value="3.2" readonly /></label>
@@ -488,6 +496,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20261118b"></script>
+  <script src="/static/app.js?v=20261118c"></script>
 </body>
 </html>

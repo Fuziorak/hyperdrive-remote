@@ -315,6 +315,13 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--teal) 50
 .leg-start::before { background: var(--red); }
 .map-meta { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; font-size: 0.76rem; color: var(--muted); }
 .map-meta strong { color: var(--text); }
+.map-mapping-setup {
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--teal) 35%, var(--line));
+  background: var(--teal-dim);
+}
+.map-mapping-setup .hint { margin: 0.35rem 0 0; }
 .seg-popover {
   padding: 0.55rem 0.65rem; border-radius: var(--radius-sm);
   background: var(--panel-2); border: 1px solid var(--teal);
