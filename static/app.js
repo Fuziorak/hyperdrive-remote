@@ -391,10 +391,14 @@
     }
     state.track.latencyResult = track.latencyResult || null;
     state.track.rawCount = track.rawCount || 0;
+    state.track.lap1Count = track.lap1Count ?? track.rawCount ?? 0;
+    state.track.lap2Count = track.lap2Count ?? track.verifyCount ?? 0;
     state.track.lapsDone = track.lapsDone || 0;
     state.track.lapsRequired = track.lapsRequired || 2;
     state.track.verifyCount = track.verifyCount || 0;
+    state.track.lapLen = track.lapLen || 0;
     state.track.lastSample = track.lastSample || null;
+    state.track.comparisons = track.comparisons || state.track.map?.comparisons || null;
     state.track.courses = track.courses || [];
     state.track.partCount = track.partCount || track.map?.partCount || state.track.partCount;
     state.track.curveGain = track.curveGain ?? track.map?.curveGain ?? state.track.curveGain;
@@ -428,25 +432,35 @@
     const txt = $("mappingProgressText");
     const fill = $("mappingProgressFill");
     if (!box || !txt || !fill) return;
-    if (!state.track.mapping) {
+    if (!state.track.mapping && !state.track.comparisons) {
       box.hidden = true;
       return;
     }
     box.hidden = false;
     const need = state.track.lapsRequired || 2;
     const lap = Math.min((state.track.lapsDone || 0) + 1, need);
-    const raw = state.track.rawCount || 0;
-    const verify = state.track.verifyCount || 0;
+    const lap1 = state.track.lap1Count || state.track.rawCount || 0;
+    const lap2 = state.track.lap2Count || state.track.verifyCount || 0;
+    const lapLen = state.track.lapLen || lap1;
     let pct = 0;
     let conf = "";
-    if ((state.track.lapsDone || 0) >= 1 && raw > 0) {
-      pct = Math.min(100, Math.round(50 + (50 * verify) / raw));
-      conf = ` · match tour2 ${verify}/${raw}`;
-    } else {
-      const target = state.track.partCount || Math.max(raw, 8);
-      pct = Math.min(50, Math.round((50 * raw) / target));
+    if (state.track.comparisons && !state.track.mapping) {
+      const c = state.track.comparisons;
+      pct = 100;
+      conf = ` · confiance ${(c.meanConfidence * 100).toFixed(0)}% · match ${c.matchedCount}/${c.segmentCount}`;
+      txt.textContent = `Map OK · ${c.segmentCount} bouts${conf}`;
+      fill.style.width = "100%";
+      return;
     }
-    txt.textContent = `Tour ${lap}/${need} · ${raw} mesures${conf}`;
+    if ((state.track.lapsDone || 0) >= 1 && lapLen > 0) {
+      pct = Math.min(100, Math.round(50 + (50 * lap2) / lapLen));
+      conf = ` · bout ${Math.max(0, lap2 - 1)} · tour2 ${lap2}/${lapLen} (tout gardé)`;
+    } else {
+      const target = state.track.partCount || Math.max(lap1, 8);
+      pct = Math.min(50, Math.round((50 * lap1) / target));
+      conf = ` · bout ${Math.max(0, lap1 - 1)} · ${lap1} mesures`;
+    }
+    txt.textContent = `Tour ${lap}/${need}${conf}`;
     fill.style.width = `${pct}%`;
   }
 
@@ -556,10 +570,12 @@
       const lap = Math.min(state.track.lapsDone + 1, state.track.lapsRequired || 2);
       const need = state.track.lapsRequired || 2;
       const sampleTxt = ls ? ` · L/R ${ls.left}/${ls.right}` : "";
+      const bout = state.track.currentSegment;
       if (state.track.lapsDone >= 1) {
-        status.textContent = `Mapping tour ${lap}/${need} · vérif ${state.track.verifyCount}/${state.track.rawCount}${sampleTxt}`;
+        const n = state.track.lapLen || state.track.rawCount || "?";
+        status.textContent = `Mapping tour ${lap}/${need} · bout #${bout} · tour2 ${state.track.lap2Count || 0}/${n} (tout enregistré)${sampleTxt}`;
       } else {
-        status.textContent = `Mapping tour ${lap}/${need} · ${state.track.rawCount} segments${sampleTxt}`;
+        status.textContent = `Mapping tour ${lap}/${need} · bout #${bout} · ${state.track.lap1Count || state.track.rawCount || 0} bouts${sampleTxt}`;
       }
     } else if (state.track.raceActive) {
       status.textContent = `Course map · segment ${state.track.currentSegment}`;
@@ -628,11 +644,21 @@
           pop.hidden = false;
           pop.dataset.segId = String(seg.id);
           title.textContent = `Segment ${seg.id} · ${seg.turn || "?"}`;
+          const l1 = seg.lap1 ? `Tour1 L/R ${seg.lap1.left}/${seg.lap1.right}` : "";
+          const l2 = seg.lap2 ? `Tour2 L/R ${seg.lap2.left}/${seg.lap2.right}` : "";
+          const conf =
+            seg.confidence != null
+              ? `Confiance ${(Number(seg.confidence) * 100).toFixed(0)}%` +
+                (seg.matched ? " · match" : " · écart")
+              : "";
           body.textContent =
-            `L/R : ${seg.left} / ${seg.right}\n` +
+            `Bout #${seg.id ?? "?"}\n` +
+            `Fusion L/R : ${seg.left} / ${seg.right}\n` +
+            `${l1}${l1 && l2 ? "\n" : ""}${l2}\n` +
+            `${conf}\n` +
             `Longueur : ${seg.length ?? "—"}\n` +
-            `Vitesse max seg. : ${seg.maxSpeed ?? "—"}\n` +
-            `(géométrie SVG approximative — pas une localisation GPS)`;
+            `Vitesse max : ${seg.maxSpeed ?? "—"}\n` +
+            `(SVG approximatif — pas une localisation GPS)`;
         }
         if ($("mapSegIndex")) $("mapSegIndex").value = String(seg.id);
         if ($("mapSegSpeed")) $("mapSegSpeed").value = String(seg.maxSpeed ?? 700);
@@ -1802,22 +1828,30 @@
         break;
       case "mappingProgress":
         state.track.mapping = true;
-        state.track.rawCount = msg.count || 0;
+        state.track.rawCount = msg.count || msg.lap1Count || 0;
+        state.track.lap1Count = msg.lap1Count ?? state.track.rawCount;
+        state.track.lap2Count = msg.lap2Count ?? msg.verifyCount ?? 0;
         state.track.lapsDone = msg.lapsDone ?? state.track.lapsDone;
         state.track.lapsRequired = msg.lapsRequired ?? 2;
         state.track.verifyCount = msg.verifyCount ?? state.track.verifyCount;
-        state.track.currentSegment = msg.currentSegment ?? state.track.currentSegment;
+        state.track.lapLen = msg.lapLen ?? state.track.lapLen;
+        state.track.currentSegment = msg.currentSegment ?? msg.segmentId ?? state.track.currentSegment;
         if (msg.preview) state.track.preview = msg.preview;
         if (msg.sample) state.track.lastSample = msg.sample;
         if (msg.sample) {
+          const sid = msg.segmentId ?? msg.sample.id ?? "?";
+          const conf =
+            msg.confidence != null ? ` conf=${Math.round(msg.confidence * 100)}%` : "";
           logLine(
             "in",
-            `Map seg #${state.track.rawCount} L/R ${msg.sample.left}/${msg.sample.right}` +
-              (msg.matched === false ? " ≠" : "")
+            `Map T${(msg.lapsDone || 0) + 1} bout #${sid} L/R ${msg.sample.left}/${msg.sample.right}` +
+              (msg.matched === false ? " ≠" : msg.matched ? " =" : "") +
+              conf +
+              (msg.kept ? " (gardé)" : "")
           );
         }
-        if (msg.lapsDone === 1 && msg.verifyCount === 1) {
-          toast("Tour 1 OK — 2ᵉ tour de vérification…");
+        if (msg.lapClosed || (msg.lapsDone === 1 && msg.verifyCount === 1)) {
+          toast("Tour 1 OK — enregistrement du tour 2…");
         }
         updateMappingProgressUI();
         renderTrackMap();
@@ -1828,12 +1862,19 @@
         state.track.lapsDone = 2;
         state.track.map = msg.map || null;
         state.track.preview = null;
+        state.track.comparisons = msg.comparisons || msg.map?.comparisons || null;
         updateMappingProgressUI();
         renderTrackMap();
-        pushEvent("Mapping terminé (2 tours)", "notify");
+        {
+          const c = state.track.comparisons;
+          const confTxt = c
+            ? ` · conf ${(c.meanConfidence * 100).toFixed(0)}% (${c.matchedCount}/${c.segmentCount})`
+            : "";
+          pushEvent(`Mapping terminé (2 tours)${confTxt}`, "notify");
+          toast(`2 tours OK${confTxt} — Sauver map`);
+        }
         updateCockpitChrome("A");
         updateCockpitChrome("B");
-        toast("2 tours OK — dessine un nom puis Sauver map");
         {
           const input = $("courseNameInput");
           if (input) {

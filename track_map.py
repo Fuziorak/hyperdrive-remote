@@ -3,9 +3,12 @@ Track mapping from Anki wheelDistance traits.
 
 wheelDistance value: { left, right } — distance since previous trait.
 right < left → turn toward the right (right wheel travelled less).
-First sample after starting mapping is discarded (not trait→trait).
-Needs 2 full laps: lap 1 builds the segment list; lap 2 must repeat
-each measure identically (within tolerance) before the map is finalized.
+First sample after starting mapping is discarded (often MQTT retained).
+
+Mapping = 2 tours complets enregistrés (rien n’est ignoré au tour 2) :
+  Tour 1 → bouts numérotés 0..N-1
+  Tour 2 → bouts numérotés 0..N-1 (toutes les mesures gardées)
+  Puis comparaison bout à bout + fusion (moyenne) pour finaliser la map.
 """
 
 from __future__ import annotations
@@ -238,6 +241,81 @@ def samples_match(a: dict[str, Any], b: dict[str, Any], ratio: float = _MATCH_RA
     return _value_close(a["left"], b["left"], ratio) and _value_close(a["right"], b["right"], ratio)
 
 
+def sample_confidence(a: dict[str, Any], b: dict[str, Any], ratio: float = _MATCH_RATIO) -> float:
+    """Confiance explicite 0..1 entre deux mesures L/R (1 = très proche)."""
+
+    def side(x: float, y: float) -> float:
+        ax, ay = abs(float(x)), abs(float(y))
+        if abs(ax - ay) <= _MATCH_ABS_FLOOR:
+            return 1.0
+        lo, hi = min(ax, ay), max(ax, ay)
+        if lo <= 1e-6:
+            return 1.0 if hi <= _MATCH_ABS_FLOOR else 0.0
+        r = hi / lo
+        if r <= 1.0:
+            return 1.0
+        # 1.0 → confiance 1 ; ratio*1.5 → 0
+        span = max(0.05, float(ratio) * 1.5 - 1.0)
+        return max(0.0, min(1.0, 1.0 - (r - 1.0) / span))
+
+    return round((side(a["left"], b["left"]) + side(a["right"], b["right"])) / 2.0, 3)
+
+
+def merge_lap_samples(
+    lap1: list[dict[str, Any]],
+    lap2: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fusionne deux tours numérotés : moyenne L/R, garde les deux mesures + confiance."""
+    n = len(lap1)
+    if n <= 0:
+        return [], {"segmentCount": 0, "matchedCount": 0, "meanConfidence": 0.0}
+    merged: list[dict[str, Any]] = []
+    matched_count = 0
+    conf_sum = 0.0
+    for i in range(n):
+        a = lap1[i]
+        b = lap2[i] if i < len(lap2) else None
+        if b is None:
+            conf = 0.0
+            matched = False
+            left = float(a["left"])
+            right = float(a["right"])
+        else:
+            conf = sample_confidence(a, b)
+            matched = samples_match(a, b)
+            left = (float(a["left"]) + float(b["left"])) / 2.0
+            right = (float(a["right"]) + float(b["right"])) / 2.0
+            conf_sum += conf
+            if matched:
+                matched_count += 1
+        seg = {
+            "id": i,
+            "left": round(left, 3),
+            "right": round(right, 3),
+            "turn": classify_turn(left, right),
+            "length": round(segment_length(left, right), 3),
+            "maxSpeed": int(a.get("maxSpeed", 700)),
+            "lap1": {"left": a["left"], "right": a["right"], "turn": a.get("turn")},
+            "lap2": (
+                {"left": b["left"], "right": b["right"], "turn": b.get("turn")}
+                if b is not None
+                else None
+            ),
+            "matched": matched,
+            "confidence": conf,
+        }
+        merged.append(seg)
+    mean_conf = round(conf_sum / n, 3) if n else 0.0
+    meta = {
+        "segmentCount": n,
+        "lap2Count": len(lap2),
+        "matchedCount": matched_count,
+        "meanConfidence": mean_conf,
+        "matchRatio": _MATCH_RATIO,
+    }
+    return merged, meta
+
+
 def turn_tightness(left: float, right: float) -> float:
     """0 = droit, 1 = virage très serré (écart L/R relatif)."""
     avg = max((float(left) + float(right)) / 2.0, 1.0)
@@ -460,11 +538,14 @@ class TrackController:
         self.mapping = False
         self.mapping_vehicle: str | None = None
         self._skip_first = False
-        self._raw: list[dict[str, Any]] = []
+        self._lap1: list[dict[str, Any]] = []
+        self._lap2: list[dict[str, Any]] = []
+        self._raw: list[dict[str, Any]] = []  # alias = tour courant (compat preview/UI)
         self._laps_done = 0
         self._lap_len = 0
-        self._verify_count = 0
+        self._verify_count = 0  # = nombre de bouts enregistrés au tour 2
         self._mapping_started_at = 0.0
+        self._last_comparisons: dict[str, Any] | None = None
         self.latency_active = False
         self.latency_vehicle: str | None = None
         self.latency_started_at = 0.0
@@ -511,15 +592,22 @@ class TrackController:
             pass
 
     def snapshot(self) -> dict[str, Any]:
-        preview = self._preview_map() if self.mapping and self._raw else None
+        preview = self._preview_map() if self.mapping and self._lap1 else None
+        last = None
+        if self._lap2:
+            last = self._lap2[-1]
+        elif self._lap1:
+            last = self._lap1[-1]
         return {
             "mapping": self.mapping,
             "mappingVehicle": self.mapping_vehicle,
-            "rawCount": len(self._raw),
+            "rawCount": len(self._lap1),
+            "lap1Count": len(self._lap1),
+            "lap2Count": len(self._lap2),
             "lapsDone": self._laps_done,
             "lapsRequired": 2,
-            "verifyCount": self._verify_count,
-            "lapLen": self._lap_len,
+            "verifyCount": len(self._lap2),
+            "lapLen": self._lap_len or len(self._lap1),
             "latencyActive": self.latency_active,
             "latencyResult": self.latency_result,
             "raceActive": self.race_active,
@@ -528,7 +616,8 @@ class TrackController:
             "currentSegment": self.current_segment,
             "map": self.map,
             "preview": preview,
-            "lastSample": self._raw[-1] if self._raw else None,
+            "lastSample": last,
+            "comparisons": self._last_comparisons,
             "courseName": self.course_name,
             "courses": self.list_courses(),
             "partCount": self.part_count or ((self.map or {}).get("partCount")),
@@ -541,9 +630,11 @@ class TrackController:
         }
 
     def _preview_map(self) -> dict[str, Any] | None:
-        if not self._raw:
+        # Dessin live : toujours basé sur le tour 1 (boucle complète dès qu’il est prêt)
+        src = self._lap1 if self._lap1 else self._raw
+        if not src:
             return None
-        return self._map_from_raw(self._raw, draft=True)
+        return self._map_from_raw(src, draft=True)
 
     def _map_from_raw(self, raw: list[dict[str, Any]], *, draft: bool = False) -> dict[str, Any]:
         part_count = int(self.part_count or len(raw) or 1)
@@ -613,17 +704,21 @@ class TrackController:
 
     def _progress_event(self, vehicle_id: str, sample: dict[str, Any], **extra: Any) -> dict[str, Any]:
         preview = self._preview_map()
+        bout_id = int(sample.get("id", self.current_segment))
         evt: dict[str, Any] = {
             "type": "mappingProgress",
             "vehicleId": vehicle_id,
-            "count": len(self._raw),
+            "count": len(self._lap1),
+            "lap1Count": len(self._lap1),
+            "lap2Count": len(self._lap2),
             "lapsDone": self._laps_done,
             "lapsRequired": 2,
-            "verifyCount": self._verify_count,
-            "lapLen": self._lap_len,
+            "verifyCount": len(self._lap2),
+            "lapLen": self._lap_len or len(self._lap1),
             "sample": sample,
+            "segmentId": bout_id,
             "preview": preview,
-            "currentSegment": max(0, len(self._raw) - 1),
+            "currentSegment": bout_id,
         }
         evt.update(extra)
         return evt
@@ -794,7 +889,7 @@ class TrackController:
         self.mapping = False
         vid = self.mapping_vehicle
         self.mapping_vehicle = None
-        if finalize and len(self._raw) >= _MIN_SEGMENTS:
+        if finalize and len(self._lap1) >= _MIN_SEGMENTS:
             self._finalize_map()
             self._emit({"type": "mappingStopped", "vehicleId": vid, "map": self.map})
             return {"ok": True, "map": self.map}
@@ -803,11 +898,14 @@ class TrackController:
 
     def _clear_session_data(self, *, keep_courses: bool = True) -> None:
         """Efface map active + mesures. Les fichiers maps/courses/ restent si keep_courses."""
+        self._lap1 = []
+        self._lap2 = []
         self._raw = []
         self._laps_done = 0
         self._lap_len = 0
         self._verify_count = 0
         self._skip_first = False
+        self._last_comparisons = None
         self.map = None
         self.course_name = None
         self.start_segment = 0
@@ -1087,64 +1185,123 @@ class TrackController:
 
         map_vid = (self.mapping_vehicle or "").upper()
         if self.mapping and map_vid and map_vid == str(vehicle_id).upper():
-            # 1ʳᵉ mesure ignorée (souvent valeur MQTT retenue) — pas de fenêtre temps
-            # qui risquerait d'avaler de vrais traits.
+            # 1ʳᵉ mesure ignorée (souvent MQTT retenu) — une seule fois
             if self._skip_first:
                 self._skip_first = False
                 self._emit({"type": "mappingSkippedFirst", "vehicleId": vehicle_id})
                 return
 
-            # Tour 2 : chaque mesure doit refrapper celle du tour 1
+            sample["maxSpeed"] = 700
+
+            # ——— Tour 2 : enregistrer TOUT, numéroté, puis comparer ———
             if self._laps_done >= 1 and self._lap_len > 0:
-                expected = self._raw[self._verify_count % self._lap_len]
+                bout_id = len(self._lap2)
+                if bout_id >= self._lap_len:
+                    # Déjà assez de bouts — ignorer le surplus après finalisation
+                    return
+                sample["id"] = bout_id
+                expected = self._lap1[bout_id]
                 matched = samples_match(sample, expected)
-                if matched:
-                    self._verify_count += 1
-                self.current_segment = min(self._verify_count, self._lap_len - 1)
+                conf = sample_confidence(sample, expected)
+                self._lap2.append(dict(sample))
+                self._raw = self._lap2
+                self._verify_count = len(self._lap2)
+                self.current_segment = bout_id
                 self._emit(
                     self._progress_event(
                         vehicle_id,
                         sample,
                         matched=matched,
+                        confidence=conf,
                         expected={"left": expected["left"], "right": expected["right"]},
+                        kept=True,
                     )
                 )
-                if self._verify_count >= self._lap_len:
+                if len(self._lap2) >= self._lap_len:
                     self._laps_done = 2
                     self.mapping = False
                     self.mapping_vehicle = None
                     self._finalize_map()
-                    self._emit({"type": "mappingComplete", "map": self.map, "lapsDone": 2})
+                    self._emit(
+                        {
+                            "type": "mappingComplete",
+                            "map": self.map,
+                            "lapsDone": 2,
+                            "comparisons": self._last_comparisons,
+                        }
+                    )
                 return
 
-            # Tour 1 : fermeture quand on retrouve la 1ʳᵉ mesure (et assez de bouts)
-            enough = len(self._raw) >= _MIN_SEGMENTS
-            if self.part_count:
-                enough = len(self._raw) >= self.part_count
-            if enough and samples_match(sample, self._raw[0]):
+            # ——— Tour 1 : enregistrer tous les bouts numérotés ———
+            # Fermeture si partCount atteint
+            if self.part_count and len(self._lap1) >= self.part_count:
+                # Passage tour 2 : cette mesure = bout 0 du tour 2
                 self._laps_done = 1
-                self._lap_len = len(self._raw)
-                self._verify_count = 1  # cette mesure = 1ʳᵉ du tour 2
+                self._lap_len = len(self._lap1)
+                sample["id"] = 0
+                expected = self._lap1[0]
+                matched = samples_match(sample, expected)
+                conf = sample_confidence(sample, expected)
+                self._lap2 = [dict(sample)]
+                self._raw = self._lap2
+                self._verify_count = 1
                 self.current_segment = 0
-                self._emit(self._progress_event(vehicle_id, sample, matched=True))
-                return
-            # Si nombre de bouts fixé : ne pas dépasser pendant le tour 1
-            if self.part_count and len(self._raw) >= self.part_count:
                 self._emit(
                     self._progress_event(
                         vehicle_id,
                         sample,
-                        matched=False,
-                        waitingClose=True,
-                        expected={"left": self._raw[0]["left"], "right": self._raw[0]["right"]},
+                        matched=matched,
+                        confidence=conf,
+                        expected={"left": expected["left"], "right": expected["right"]},
+                        lapClosed=True,
+                        kept=True,
+                    )
+                )
+                if len(self._lap2) >= self._lap_len:
+                    self._laps_done = 2
+                    self.mapping = False
+                    self.mapping_vehicle = None
+                    self._finalize_map()
+                    self._emit(
+                        {
+                            "type": "mappingComplete",
+                            "map": self.map,
+                            "lapsDone": 2,
+                            "comparisons": self._last_comparisons,
+                        }
+                    )
+                return
+
+            # Fermeture naturelle : assez de bouts + mesure ≈ 1er bout → début tour 2
+            enough = len(self._lap1) >= _MIN_SEGMENTS
+            if enough and samples_match(sample, self._lap1[0]):
+                self._laps_done = 1
+                self._lap_len = len(self._lap1)
+                sample["id"] = 0
+                conf = sample_confidence(sample, self._lap1[0])
+                self._lap2 = [dict(sample)]
+                self._raw = self._lap2
+                self._verify_count = 1
+                self.current_segment = 0
+                self._emit(
+                    self._progress_event(
+                        vehicle_id,
+                        sample,
+                        matched=True,
+                        confidence=conf,
+                        expected={"left": self._lap1[0]["left"], "right": self._lap1[0]["right"]},
+                        lapClosed=True,
+                        kept=True,
                     )
                 )
                 return
 
-            sample["maxSpeed"] = 700
-            self._raw.append(sample)
-            self.current_segment = len(self._raw) - 1
-            self._emit(self._progress_event(vehicle_id, sample))
+            # Continuer le tour 1
+            sample["id"] = len(self._lap1)
+            self._lap1.append(dict(sample))
+            self._raw = self._lap1
+            self.current_segment = sample["id"]
+            self._emit(self._progress_event(vehicle_id, sample, kept=True))
             return
 
         race_vid = (self.race_vehicle or "").upper()
@@ -1195,11 +1352,40 @@ class TrackController:
             )
 
     def _finalize_map(self) -> None:
+        """Fusionne tour1+tour2 (moyenne), numérote les bouts, calcule la confiance."""
+        if not self._lap1:
+            return
         if not self.part_count:
-            self.part_count = len(self._raw)
-        self.map = self._map_from_raw(self._raw, draft=False)
+            self.part_count = len(self._lap1)
+        merged, comparisons = merge_lap_samples(self._lap1, self._lap2)
+        self._last_comparisons = comparisons
+        # Géométrie depuis les mesures fusionnées
+        self.map = self._map_from_raw(merged, draft=False)
+        # Réinjecter métadonnées de comparaison / numéros sur les segments géométrie
+        for i, seg in enumerate(self.map.get("segments") or []):
+            if i < len(merged):
+                src = merged[i]
+                seg["id"] = src["id"]
+                seg["left"] = src["left"]
+                seg["right"] = src["right"]
+                seg["turn"] = src["turn"]
+                seg["length"] = src["length"]
+                seg["lap1"] = src.get("lap1")
+                seg["lap2"] = src.get("lap2")
+                seg["matched"] = src.get("matched")
+                seg["confidence"] = src.get("confidence")
         self.map["partCount"] = int(self.part_count)
         self.map["loopClosed"] = True
+        self.map["comparisons"] = comparisons
+        self.map["lap1"] = [
+            {"id": s.get("id", i), "left": s["left"], "right": s["right"], "turn": s.get("turn")}
+            for i, s in enumerate(self._lap1)
+        ]
+        self.map["lap2"] = [
+            {"id": s.get("id", i), "left": s["left"], "right": s["right"], "turn": s.get("turn")}
+            for i, s in enumerate(self._lap2)
+        ]
+        self._raw = merged
         self.start_segment = 0
         self.current_segment = 0
         self._save_map()
