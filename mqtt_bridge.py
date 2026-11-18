@@ -26,8 +26,14 @@ DEFAULT_USER = "Your_mom"
 DEFAULT_PASSWORD = ""  # set in UI if MQTT Explorer uses one
 # Lab host id observed on broker: Anki/Hosts/U/hyperdrive/...
 DEFAULT_HOST_ID = "hyperdrive"
-# Optional robustness mode: republish last speed while hold checkbox is on.
-_HOLD_INTERVAL_S = 0.35
+# Hold : republication périodique (broker partagé). Défaut 3 Hz (1–10 Hz).
+_HOLD_DEFAULT_HZ = 3.0
+_HOLD_MIN_HZ = 1.0
+_HOLD_MAX_HZ = 10.0
+# Conflits d'intents externes : alerte expire après N secondes sans nouveau conflit.
+_CONFLICT_TTL_S = 4.0
+# Feux : republication Hold moins fréquente que la vitesse (évite spam LED).
+_HOLD_LIGHTS_EVERY_N = 6
 
 
 class MqttBridge:
@@ -55,6 +61,9 @@ class MqttBridge:
         self._scanning = False
         self._desired: dict[str, dict[str, Any]] = {}
         self._hold_enabled: dict[str, bool] = {}
+        self._hold_hz: float = _HOLD_DEFAULT_HZ
+        self._hold_stats: dict[str, dict[str, Any]] = {}
+        self._hold_tick: int = 0
         self._hold_stop = threading.Event()
         self._hold_thread: threading.Thread | None = None
         self._subscribed_vehicles: set[str] = set()
@@ -68,6 +77,7 @@ class MqttBridge:
         self._connect_started_at = 0.0
         self._reconnect_failures = 0
         self._reconnect_pending = False
+        self._conflicts: dict[str, dict[str, Any]] = {}
         self.track = TrackController(self._emit)
         self._race_brake_timer: threading.Timer | None = None
         self._race_last_cmd_speed: int | None = None
@@ -130,6 +140,12 @@ class MqttBridge:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            now = time.time()
+            conflicts = {
+                vid: dict(c)
+                for vid, c in self._conflicts.items()
+                if now - float(c.get("ts") or 0) <= _CONFLICT_TTL_S
+            }
             return {
                 "mqttConnected": self._connected,
                 "broker": f"{self.host}:{self.port}",
@@ -139,6 +155,9 @@ class MqttBridge:
                 "hasMqttPassword": bool(self.password),
                 "scanning": self._scanning,
                 "hold": dict(self._hold_enabled),
+                "holdHz": self._hold_hz,
+                "holdStats": {k: dict(v) for k, v in self._hold_stats.items()},
+                "conflicts": conflicts,
                 "desired": {k: dict(v) for k, v in self._desired.items()},
                 "vehicles": dict(self._vehicles),
                 "track": self.track.snapshot(),
@@ -481,9 +500,13 @@ class MqttBridge:
             for ch in LIGHT_CHANNELS:
                 lights[ch] = {"effect": "strobe", "start": 0, "end": 15, "frequency": 30}
         self.set_lights(vehicle_id, lights)
+        self._remember(vehicle_id, lightPreset=preset)
 
     def panic_stop(self, vehicle_id: str) -> None:
-        # STOP cockpit = priorité absolue sur course / mapping / latence
+        # STOP = priorité absolue : coupe automation, timers course, Hold vitesse non nulle
+        self._cancel_race_brake()
+        if self._hold_enabled.get(vehicle_id):
+            self.set_hold(vehicle_id, False)
         self.set_speed(vehicle_id, 0, 2000, manual=True)
 
     def start_latency_test(self, vehicle_id: str, max_speed: int = 1000, accel: int = 2000) -> dict[str, Any]:
@@ -600,20 +623,36 @@ class MqttBridge:
         self._emit({"type": "assertControl", "vehicleId": vehicle_id, "applied": applied})
         return applied
 
+    def set_hold_hz(self, hz: float) -> dict[str, Any]:
+        self._hold_hz = max(_HOLD_MIN_HZ, min(_HOLD_MAX_HZ, float(hz)))
+        # La boucle Hold relit _hold_hz à chaque tick — pas besoin de relancer le thread.
+        self._emit({"type": "holdHzSet", "holdHz": self._hold_hz})
+        return {"ok": True, "holdHz": self._hold_hz}
+
     def set_hold(self, vehicle_id: str, enabled: bool, interval_s: float | None = None) -> None:
-        interval = float(interval_s if interval_s is not None else _HOLD_INTERVAL_S)
-        self._hold_enabled[vehicle_id] = enabled
+        # Compat : interval_s → Hz si fourni (ex. 0.35 s ≈ 2.86 Hz)
+        if interval_s is not None and float(interval_s) > 0:
+            self._hold_hz = max(_HOLD_MIN_HZ, min(_HOLD_MAX_HZ, 1.0 / float(interval_s)))
+        self._hold_enabled[vehicle_id] = bool(enabled)
+        stats = self._hold_stats.setdefault(
+            vehicle_id, {"sent": 0, "lastSentAt": None, "active": False}
+        )
+        stats["active"] = bool(enabled)
         if enabled and (self._hold_thread is None or not self._hold_thread.is_alive()):
             self._hold_stop.clear()
-            self._hold_thread = threading.Thread(
-                target=self._hold_loop,
-                args=(interval,),
-                daemon=True,
-            )
+            self._hold_thread = threading.Thread(target=self._hold_loop, daemon=True)
             self._hold_thread.start()
         if not any(self._hold_enabled.values()):
             self._hold_stop.set()
-        self._emit({"type": "holdChanged", "vehicleId": vehicle_id, "enabled": enabled})
+        self._emit(
+            {
+                "type": "holdChanged",
+                "vehicleId": vehicle_id,
+                "enabled": bool(enabled),
+                "holdHz": self._hold_hz,
+                "holdStats": dict(self._hold_stats.get(vehicle_id) or {}),
+            }
+        )
 
     # ----- internals -----
 
@@ -811,30 +850,54 @@ class MqttBridge:
             if v is not None:
                 cfg[k] = v
 
-    def _hold_refresh_speed(self, vehicle_id: str) -> None:
-        """Race cruise: only re-send speed (no connect/lights/lane — those caused jerk)."""
+    def _hold_refresh(self, vehicle_id: str, *, tick: int) -> None:
+        """Réaffirme vitesse (toujours) et feux (moins souvent). Jamais lane (manœuvres)."""
         cfg = self._desired.get(vehicle_id) or {}
         if "velocity" not in cfg:
             return
         velocity = int(cfg["velocity"])
         if velocity <= 0:
             return
-        # Keep accel firm so any tiny coast is corrected immediately at race pace.
         acceleration = int(cfg.get("acceleration", 1200))
         self._publish_speed(vehicle_id, velocity, acceleration)
+        # Feux : réaffirmation périodique sans spam (tous les N ticks)
+        if cfg.get("lights") and tick % _HOLD_LIGHTS_EVERY_N == 0:
+            try:
+                self.set_lights(vehicle_id, cfg["lights"])
+            except Exception as exc:
+                debug_log.warn("mqtt", "hold lights refresh failed", vehicleId=vehicle_id, error=str(exc))
+        stats = self._hold_stats.setdefault(
+            vehicle_id, {"sent": 0, "lastSentAt": None, "active": True}
+        )
+        stats["sent"] = int(stats.get("sent") or 0) + 1
+        stats["lastSentAt"] = time.time()
+        stats["active"] = True
 
-    def _hold_loop(self, interval_s: float) -> None:
-        # Always use race interval even if an older caller passed 1.5s.
-        period = min(float(interval_s), _HOLD_INTERVAL_S)
-        while not self._hold_stop.wait(period):
+    def _hold_loop(self) -> None:
+        while True:
+            period = 1.0 / max(_HOLD_MIN_HZ, min(_HOLD_MAX_HZ, float(self._hold_hz)))
+            if self._hold_stop.wait(period):
+                return
             if not self._connected:
                 continue
+            self._hold_tick = (self._hold_tick + 1) % 10_000
             for vid, on in list(self._hold_enabled.items()):
-                if on:
-                    try:
-                        self._hold_refresh_speed(vid)
-                    except Exception as exc:
-                        debug_log.warn("mqtt", "hold speed refresh failed", vehicleId=vid, error=str(exc))
+                if not on:
+                    continue
+                try:
+                    self._hold_refresh(vid, tick=self._hold_tick)
+                except Exception as exc:
+                    debug_log.warn("mqtt", "hold refresh failed", vehicleId=vid, error=str(exc))
+            # Snapshot léger pour l’UI (stats Hold)
+            if any(self._hold_enabled.values()):
+                self._emit(
+                    {
+                        "type": "holdTick",
+                        "holdHz": self._hold_hz,
+                        "holdStats": {k: dict(v) for k, v in self._hold_stats.items()},
+                        "hold": dict(self._hold_enabled),
+                    }
+                )
 
     def _emit(self, event: dict[str, Any]) -> None:
         event.setdefault("ts", time.time())
@@ -856,6 +919,8 @@ class MqttBridge:
             "Anki/Vehicles/U/+/S/status",
             # Toujours écouter les traits roues (mapping / latence / course)
             "Anki/Vehicles/U/+/E/wheelDistance",
+            # Intents d’autres clients (détection conflits) — callerId = dernier segment
+            "Anki/Vehicles/U/+/I/+",
         ]
 
     def _apply_subscriptions(self, client: mqtt.Client) -> None:
@@ -931,6 +996,67 @@ class MqttBridge:
             })
         return snap
 
+    def _handle_foreign_intent(
+        self, vehicle_id: str, foreign_caller: str, payload: dict[str, Any]
+    ) -> None:
+        """Compare intents d'autres callerId avec nos consignes (broker partagé)."""
+        if not foreign_caller or foreign_caller == self.caller_id:
+            return
+        intent_type = str(payload.get("type") or "").strip()
+        if not intent_type:
+            return
+        # Ignorer nos propres echoes éventuels / types non conflictuels
+        if intent_type in {"cancelLane"}:
+            return
+        pl = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        desired = self._desired.get(vehicle_id) or {}
+        local_val: Any = None
+        foreign_val: Any = None
+        conflict = False
+
+        if intent_type == "speed":
+            foreign_val = pl.get("velocity")
+            local_val = desired.get("velocity")
+            if local_val is not None and foreign_val is not None:
+                try:
+                    conflict = abs(int(foreign_val) - int(local_val)) > 15
+                except (TypeError, ValueError):
+                    conflict = True
+        elif intent_type == "lights":
+            local_val = "preset/custom" if desired.get("lights") or desired.get("lightPreset") else None
+            foreign_val = "lights"
+            conflict = local_val is not None
+        elif intent_type == "lane":
+            foreign_val = pl.get("offset")
+            lane = desired.get("lane") if isinstance(desired.get("lane"), dict) else {}
+            local_val = lane.get("offset")
+            if local_val is not None and foreign_val is not None:
+                try:
+                    conflict = abs(float(foreign_val) - float(local_val)) > 2.0
+                except (TypeError, ValueError):
+                    conflict = True
+        elif intent_type == "connect":
+            foreign_val = pl.get("value")
+            local_val = desired.get("connect")
+            conflict = local_val is True and foreign_val is False
+        else:
+            return
+
+        if not conflict:
+            return
+
+        info = {
+            "vehicleId": vehicle_id,
+            "command": intent_type,
+            "localValue": local_val,
+            "foreignValue": foreign_val,
+            "foreignCallerId": foreign_caller,
+            "holdActive": bool(self._hold_enabled.get(vehicle_id)),
+            "ts": time.time(),
+        }
+        self._conflicts[vehicle_id] = info
+        self._emit({"type": "intentConflict", **info})
+
     def _route(self, topic: str, payload: dict[str, Any]) -> None:
         parts = topic.split("/")
 
@@ -959,6 +1085,11 @@ class MqttBridge:
         ):
             vid = parts[3]
             if not vid or vid in {"I", "D"}:
+                return
+            # Intent externe : Anki/Vehicles/U/{vid}/I/{callerId}
+            if len(parts) >= 6 and parts[4] == "I":
+                foreign_caller = parts[5]
+                self._handle_foreign_intent(vid, foreign_caller, payload if isinstance(payload, dict) else {})
                 return
             self._upsert_vehicle(vid)
             leaf = parts[-1]

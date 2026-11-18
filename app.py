@@ -322,10 +322,28 @@ def api_assert(vehicle_id: str):
 def api_hold(vehicle_id: str):
     data = request.get_json(silent=True) or {}
     enabled = bool(data.get("enable", False))
-    interval = float(data.get("interval", 1.5))
+    # Nouveau : hz (1–10). Compat : interval (secondes) → hz = 1/interval
+    hz = data.get("hz")
+    interval = data.get("interval")
     try:
-        orch.set_hold(vehicle_id, enabled=enabled, interval_s=max(0.3, min(10.0, interval)))
+        if hz is not None:
+            orch.set_hold_hz(float(hz))
+            orch.set_hold(vehicle_id, enabled=enabled)
+        elif interval is not None:
+            orch.set_hold(vehicle_id, enabled=enabled, interval_s=float(interval))
+        else:
+            orch.set_hold(vehicle_id, enabled=enabled)
         return jsonify({"ok": True, "state": orch.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/hold/hz")
+def api_hold_hz():
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.set_hold_hz(float(data.get("hz", 3)))
+        return jsonify({**out, "state": orch.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 

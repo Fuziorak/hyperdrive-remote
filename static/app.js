@@ -55,6 +55,12 @@
     meta: null,
     mqttConnected: false,
     hold: {},
+    holdHz: 3,
+    holdStats: {},
+    conflicts: {},
+    desired: {},
+    lightPreset: { A: null, B: null },
+    view: "pilot",
     slots: { A: null, B: null },
     selectedId: null,
     autoBootDone: false,
@@ -62,6 +68,8 @@
     /** Conduite clavier WASD sur la piste active. */
     manualDrive: false,
     manualSlot: "A",
+    mapZoom: 1,
+    showSegNumbers: true,
     race: {
       running: false,
       startTs: 0,
@@ -93,6 +101,116 @@
       brakeAtFraction: 0.75,
     },
   };
+
+  function setView(name) {
+    state.view = name;
+    document.querySelectorAll(".nav-btn").forEach((b) => {
+      b.classList.toggle("is-active", b.dataset.view === name);
+    });
+    document.querySelectorAll("[data-view-panel]").forEach((panel) => {
+      const on = panel.dataset.viewPanel === name;
+      panel.classList.toggle("is-active", on);
+      panel.hidden = !on;
+    });
+    if (name === "pilot" || name === "race") renderTrackMap();
+  }
+
+  function pushEvent(text, kind) {
+    const box = $("eventLog");
+    if (!box) return;
+    const row = document.createElement("div");
+    row.className = "ev";
+    const t = new Date().toLocaleTimeString();
+    row.innerHTML = `<strong>${escapeHtml(t)}</strong> ${escapeHtml(text)}`;
+    box.prepend(row);
+    while (box.children.length > 80) box.lastChild.remove();
+    if (kind === "notify" || kind === "warn" || kind === "err") {
+      notify(text, kind === "notify" ? "ok" : kind);
+    }
+  }
+
+  function notify(msg, level) {
+    const stack = $("notifyStack");
+    if (!stack) return;
+    const el = document.createElement("div");
+    el.className = `notify${level === "warn" ? " warn" : level === "err" ? " err" : ""}`;
+    el.textContent = msg;
+    stack.prepend(el);
+    setTimeout(() => el.remove(), 4200);
+    while (stack.children.length > 5) stack.lastChild.remove();
+  }
+
+  function cockpitMode(slot) {
+    const id = state.slots[slot];
+    if (!id) return "idle";
+    const t = state.track;
+    if (t.raceActive && (t.raceVehicle || "").toUpperCase() === id.toUpperCase()) return "race";
+    if (t.mapping && (t.mappingVehicle || "").toUpperCase() === id.toUpperCase()) return "mapping";
+    const root = cockpitEl(slot);
+    const spd = Number(root?.querySelector(".speed-slider")?.value || 0);
+    if (spd <= 0) return "stop";
+    return "manual";
+  }
+
+  function updateCockpitChrome(slot) {
+    const root = cockpitEl(slot);
+    if (!root) return;
+    const id = state.slots[slot];
+    const v = (id && state.vehicles[id]) || null;
+    const mode = cockpitMode(slot);
+    const modeEl = root.querySelector(".mode-badge");
+    const connEl = root.querySelector(".conn-badge");
+    if (modeEl) {
+      const labels = { idle: "Libre", manual: "Manuel", mapping: "Mapping", race: "Course", stop: "Arrêt" };
+      modeEl.dataset.mode = mode;
+      modeEl.textContent = labels[mode] || mode;
+    }
+    if (connEl) {
+      const on = !!(v && v.connected);
+      connEl.dataset.conn = on ? "on" : "off";
+      connEl.textContent = on ? "Connecté" : (v ? "Hors ligne" : "Vide");
+    }
+    const cmd = root.querySelector(".t-cmd-speed");
+    if (cmd) cmd.textContent = root.querySelector(".speed-value")?.textContent || "0";
+    const lp = root.querySelector(".t-light-preset");
+    if (lp) lp.textContent = state.lightPreset[slot] || "—";
+
+    const holdOn = !!(id && state.hold[id]);
+    const holdBar = root.querySelector(".hold-bar");
+    if (holdBar) holdBar.classList.toggle("is-active", holdOn);
+    const stats = (id && state.holdStats[id]) || {};
+    const hzEl = root.querySelector(".hold-hz-label");
+    const sentEl = root.querySelector(".hold-sent-label");
+    const lastEl = root.querySelector(".hold-last-label");
+    if (hzEl) hzEl.textContent = `${state.holdHz} Hz`;
+    if (sentEl) sentEl.textContent = `${stats.sent || 0} envois`;
+    if (lastEl) {
+      lastEl.textContent = stats.lastSentAt
+        ? `dernier : ${new Date(stats.lastSentAt * 1000).toLocaleTimeString()}`
+        : "dernier : —";
+    }
+
+    const banner = root.querySelector(".conflict-banner");
+    const detail = root.querySelector(".conflict-detail");
+    const conflict = id && state.conflicts[id];
+    if (banner && detail) {
+      if (conflict && Date.now() / 1000 - (conflict.ts || 0) < 4) {
+        banner.hidden = false;
+        detail.textContent = `${conflict.command} local=${conflict.localValue} ≠ ext=${conflict.foreignValue} · caller ${conflict.foreignCallerId}${conflict.holdActive ? " · Hold ON" : ""}`;
+      } else {
+        banner.hidden = true;
+      }
+    }
+  }
+
+  function updateFleetCount() {
+    const ids = Object.keys(state.vehicles || {});
+    const conn = ids.filter((id) => state.vehicles[id]?.connected).length;
+    const el = $("fleetCountLabel");
+    if (el) el.textContent = `${ids.length} détectés · ${conn} conn.`;
+    const kb = $("kbFocusLabel");
+    if (kb) kb.textContent = state.manualSlot || "A";
+  }
 
   function curveSpeedHint(pct) {
     const p = Math.max(0, Math.min(100, Number(pct) || 0)) / 100;
@@ -257,6 +375,8 @@
     if (!track) return;
     state.track.mapping = !!track.mapping;
     state.track.raceActive = !!track.raceActive;
+    state.track.mappingVehicle = track.mappingVehicle || null;
+    state.track.raceVehicle = track.raceVehicle || null;
     state.track.startSegment = track.startSegment ?? 0;
     state.track.currentSegment = track.currentSegment ?? 0;
     // Pendant le mapping: ne jamais réinjecter une ancienne map sauvegardée
@@ -292,8 +412,42 @@
         track.brakeAtFraction ?? state.track.brakeAtFraction
       );
     }
+    if ($("raceActiveMapName")) {
+      $("raceActiveMapName").textContent = state.track.courseName || (state.track.map ? "map chargée" : "—");
+    }
+    if ($("raceSegHint")) $("raceSegHint").textContent = String(state.track.currentSegment ?? "—");
+    updateMappingProgressUI();
     renderCourseSelect();
     renderTrackMap();
+    updateCockpitChrome("A");
+    updateCockpitChrome("B");
+  }
+
+  function updateMappingProgressUI() {
+    const box = $("mappingProgressBox");
+    const txt = $("mappingProgressText");
+    const fill = $("mappingProgressFill");
+    if (!box || !txt || !fill) return;
+    if (!state.track.mapping) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    const need = state.track.lapsRequired || 2;
+    const lap = Math.min((state.track.lapsDone || 0) + 1, need);
+    const raw = state.track.rawCount || 0;
+    const verify = state.track.verifyCount || 0;
+    let pct = 0;
+    let conf = "";
+    if ((state.track.lapsDone || 0) >= 1 && raw > 0) {
+      pct = Math.min(100, Math.round(50 + (50 * verify) / raw));
+      conf = ` · match tour2 ${verify}/${raw}`;
+    } else {
+      const target = state.track.partCount || Math.max(raw, 8);
+      pct = Math.min(50, Math.round((50 * raw) / target));
+    }
+    txt.textContent = `Tour ${lap}/${need} · ${raw} mesures${conf}`;
+    fill.style.width = `${pct}%`;
   }
 
   function renderCourseSelect() {
@@ -466,25 +620,26 @@
       line.classList.add("map-seg", `turn-${seg.turn || "straight"}`);
       if (!state.track.mapping && seg.id === state.track.startSegment) line.classList.add("is-start");
       if (seg.id === highlightId) line.classList.add("is-current");
-      if (!state.track.mapping) {
-        line.addEventListener("click", async () => {
-          try {
-            const data = await api("/api/track/start-segment", {
-              method: "POST",
-              body: JSON.stringify({ index: seg.id }),
-            });
-            applyTrackSnapshot(data.track);
-            $("mapSegIndex").value = String(seg.id);
-            $("mapSegSpeed").value = String(seg.maxSpeed ?? 700);
-            toast(`Départ = segment ${seg.id}`);
-          } catch (err) {
-            toast(err.message);
-          }
-        });
-      }
+      line.addEventListener("click", () => {
+        const pop = $("segPopover");
+        const title = $("segPopTitle");
+        const body = $("segPopBody");
+        if (pop && title && body) {
+          pop.hidden = false;
+          pop.dataset.segId = String(seg.id);
+          title.textContent = `Segment ${seg.id} · ${seg.turn || "?"}`;
+          body.textContent =
+            `L/R : ${seg.left} / ${seg.right}\n` +
+            `Longueur : ${seg.length ?? "—"}\n` +
+            `Vitesse max seg. : ${seg.maxSpeed ?? "—"}\n` +
+            `(géométrie SVG approximative — pas une localisation GPS)`;
+        }
+        if ($("mapSegIndex")) $("mapSegIndex").value = String(seg.id);
+        if ($("mapSegSpeed")) $("mapSegSpeed").value = String(seg.maxSpeed ?? 700);
+      });
       g.appendChild(line);
 
-      if (labels && pts.length) {
+      if (labels && pts.length && state.showSegNumbers !== false) {
         const mid = pts[Math.floor(pts.length / 2)];
         const q = mapProject(mid.x, mid.y, bounds);
         const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -696,19 +851,23 @@
 
   function refreshCockpit(slot) {
     const root = cockpitEl(slot);
+    if (!root) return;
     const id = state.slots[slot];
     const v = (id && state.vehicles[id]) || null;
     root.querySelector(".cockpit-title").textContent = v ? (v.model || "Véhicule") : "Libre";
     root.querySelector(".cockpit-id").textContent = id
       ? `${id}${v && v.connected ? " · prêt" : " · connexion…"}`
       : slot === "A"
-        ? "Clique un véhicule dans le garage"
+        ? "Assigne un véhicule (Config → Garage)"
         : "2e véhicule → piste B";
     root.classList.toggle("empty-slot", !id);
-    root.querySelector(".hold-toggle-input").checked = !!(id && state.hold[id]);
+    const holdInput = root.querySelector(".hold-toggle-input");
+    if (holdInput) holdInput.checked = !!(id && state.hold[id]);
     updateTelemetry(slot);
+    updateCockpitChrome(slot);
     if (slot === "A") updateHero();
     syncCockpitLayout();
+    updateFleetCount();
   }
 
   function requireSlot(slot) {
@@ -921,11 +1080,13 @@
     ev.preventDefault();
     if (code === "1") {
       state.manualSlot = "A";
+      updateFleetCount();
       toast("Clavier → piste A");
       return;
     }
     if (code === "2") {
       state.manualSlot = "B";
+      updateFleetCount();
       toast("Clavier → piste B");
       return;
     }
@@ -960,6 +1121,12 @@
 
   async function sendLightsPreset(slot, preset) {
     const id = requireSlot(slot);
+    state.lightPreset[slot] = preset;
+    const root = cockpitEl(slot);
+    root?.querySelectorAll(".light-presets .preset").forEach((b) => {
+      b.classList.toggle("is-active", b.dataset.preset === preset);
+    });
+    updateCockpitChrome(slot);
     await api(`/api/vehicles/${encodeURIComponent(id)}/lights`, {
       method: "POST",
       body: JSON.stringify({ preset }),
@@ -1215,6 +1382,9 @@
     let speedTimer = null;
     speedSlider.addEventListener("input", () => {
       speedValue.textContent = speedSlider.value;
+      const cmd = root.querySelector(".t-cmd-speed");
+      if (cmd) cmd.textContent = speedSlider.value;
+      updateCockpitChrome(slot);
       clearTimeout(speedTimer);
       speedTimer = setTimeout(() => {
         sendSpeed(slot).catch((err) => {
@@ -1316,18 +1486,22 @@
         const enable = e.target.checked;
         const data = await api(`/api/vehicles/${encodeURIComponent(id)}/hold`, {
           method: "POST",
-          body: JSON.stringify({ enable, interval: 0.35 }),
+          body: JSON.stringify({ enable, hz: state.holdHz || 3 }),
         });
         applySnapshot(data.state);
-        toast(
-          enable
-            ? `Piste ${slot}: vitesse renvoyée en boucle (robustesse)`
-            : `Piste ${slot}: envoi unique seulement`
-        );
+        updateCockpitChrome(slot);
+        toast(enable ? `Hold ${slot} · ${state.holdHz} Hz` : `Hold ${slot} off`);
+        pushEvent(`Hold ${slot} ${enable ? "ON" : "OFF"} @ ${state.holdHz} Hz`);
       } catch (err) {
         e.target.checked = false;
         if (err.message !== "no vehicle") toast(err.message);
       }
+    });
+
+    root.querySelector(".btn-kb-focus")?.addEventListener("click", () => {
+      state.manualSlot = slot;
+      updateFleetCount();
+      toast(`Clavier → piste ${slot}`);
     });
   }
 
@@ -1339,18 +1513,27 @@
     state.vehicles = snap.vehicles || {};
     Object.keys(state.vehicles).forEach(rememberGarageOrder);
     state.hold = snap.hold || {};
-    $("mqttPill").dataset.state = state.mqttConnected ? "on" : "off";
-    $("mqttLabel").textContent = state.mqttConnected
-      ? `MQTT · ${snap.broker}`
-      : "MQTT déconnecté";
-    $("scanLabel").textContent = snap.scanning ? "Scan en cours" : "Scan off";
-    if (snap.hostId) $("hostId").value = snap.hostId;
-    if (snap.mqttUsername != null) $("mqttUsername").value = snap.mqttUsername;
-    if (snap.callerId) $("callerIdLabel").textContent = snap.callerId;
+    if (snap.holdHz != null) state.holdHz = Number(snap.holdHz) || 3;
+    if (snap.holdStats) state.holdStats = snap.holdStats;
+    if (snap.conflicts) state.conflicts = snap.conflicts;
+    if (snap.desired) state.desired = snap.desired;
+    if ($("holdHzSlider")) $("holdHzSlider").value = String(state.holdHz);
+    if ($("holdHzValue")) $("holdHzValue").textContent = String(state.holdHz);
+    if ($("mqttPill")) $("mqttPill").dataset.state = state.mqttConnected ? "on" : "off";
+    if ($("mqttLabel")) {
+      $("mqttLabel").textContent = state.mqttConnected
+        ? `MQTT · ${snap.broker}`
+        : "MQTT déconnecté";
+    }
+    if ($("scanLabel")) $("scanLabel").textContent = snap.scanning ? "Scan en cours" : "Scan off";
+    if (snap.hostId && $("hostId")) $("hostId").value = snap.hostId;
+    if (snap.mqttUsername != null && $("mqttUsername")) $("mqttUsername").value = snap.mqttUsername;
+    if (snap.callerId && $("callerIdLabel")) $("callerIdLabel").textContent = snap.callerId;
     if (snap.track) applyTrackSnapshot(snap.track);
     renderVehicles();
     refreshCockpit("A");
     refreshCockpit("B");
+    updateFleetCount();
   }
 
   async function startAutoScan() {
@@ -1504,6 +1687,8 @@
         if (isNew) {
           renderVehicles();
           logLine("in", `Véhicule découvert: ${id} (${msg.model || "?"})`);
+          pushEvent(`Découvert ${id}`, "notify");
+          updateFleetCount();
         } else {
           patchVehicleRow(id);
         }
@@ -1541,9 +1726,48 @@
         break;
       case "holdChanged":
         state.hold[msg.vehicleId] = !!msg.enabled;
+        if (msg.holdHz != null) state.holdHz = Number(msg.holdHz) || state.holdHz;
+        if (msg.holdStats) state.holdStats[msg.vehicleId] = msg.holdStats;
         refreshCockpit("A");
         refreshCockpit("B");
         break;
+      case "holdHzSet":
+        state.holdHz = Number(msg.holdHz) || 3;
+        if ($("holdHzSlider")) $("holdHzSlider").value = String(state.holdHz);
+        if ($("holdHzValue")) $("holdHzValue").textContent = String(state.holdHz);
+        updateCockpitChrome("A");
+        updateCockpitChrome("B");
+        break;
+      case "holdTick":
+        if (msg.holdHz != null) state.holdHz = Number(msg.holdHz) || state.holdHz;
+        if (msg.holdStats) state.holdStats = msg.holdStats;
+        if (msg.hold) state.hold = msg.hold;
+        updateCockpitChrome("A");
+        updateCockpitChrome("B");
+        break;
+      case "intentConflict": {
+        if (msg.vehicleId) {
+          state.conflicts[msg.vehicleId] = {
+            command: msg.command,
+            localValue: msg.localValue,
+            foreignValue: msg.foreignValue,
+            foreignCallerId: msg.foreignCallerId,
+            holdActive: msg.holdActive,
+            ts: msg.ts || Date.now() / 1000,
+          };
+          updateCockpitChrome("A");
+          updateCockpitChrome("B");
+          // Anti-spam : une notif max toutes les 3s pour le même véhicule
+          const key = `_cf_${msg.vehicleId}`;
+          const now = Date.now();
+          if (!state[key] || now - state[key] > 3000) {
+            state[key] = now;
+            notify(`Conflit MQTT · ${msg.command} (${msg.foreignCallerId})`, "warn");
+            pushEvent(`Conflit ${msg.vehicleId}: ${msg.command} local=${msg.localValue} ext=${msg.foreignValue}`);
+          }
+        }
+        break;
+      }
       case "wheelDistance": {
         const id = msg.vehicleId;
         if (state.vehicles[id]) {
@@ -1564,8 +1788,11 @@
         state.track.currentSegment = 0;
         state.track.map = null; // oublier l'ancienne map active
         state.track.courseName = null;
+        state.track.mappingVehicle = msg.vehicleId || null;
         toast(`Mapping ${msg.vehicleId} · anciennes données ignorées`);
+        updateMappingProgressUI();
         renderTrackMap();
+        updateCockpitChrome("A");
         break;
       case "mappingSkippedStale":
         logLine("in", "Mapping: wheelDistance retenu/stale ignoré");
@@ -1592,14 +1819,20 @@
         if (msg.lapsDone === 1 && msg.verifyCount === 1) {
           toast("Tour 1 OK — 2ᵉ tour de vérification…");
         }
+        updateMappingProgressUI();
         renderTrackMap();
+        updateCockpitChrome("A");
         break;
       case "mappingComplete":
         state.track.mapping = false;
         state.track.lapsDone = 2;
         state.track.map = msg.map || null;
         state.track.preview = null;
+        updateMappingProgressUI();
         renderTrackMap();
+        pushEvent("Mapping terminé (2 tours)", "notify");
+        updateCockpitChrome("A");
+        updateCockpitChrome("B");
         toast("2 tours OK — dessine un nom puis Sauver map");
         {
           const input = $("courseNameInput");
@@ -1651,19 +1884,29 @@
         break;
       case "raceStarted":
         state.track.raceActive = true;
+        state.track.raceVehicle = msg.vehicleId || state.track.raceVehicle;
         state.track.currentSegment = msg.currentSegment ?? state.track.startSegment;
         toast("Course map démarrée");
+        pushEvent("Course démarrée", "notify");
+        if ($("raceSpeedHint")) $("raceSpeedHint").textContent = String(msg.targetSpeed ?? "—");
         renderTrackMap();
+        updateCockpitChrome("A");
+        updateCockpitChrome("B");
         break;
       case "raceStopped":
         state.track.raceActive = false;
+        state.track.raceVehicle = null;
         toast("Course map stoppée");
         renderTrackMap();
+        updateCockpitChrome("A");
+        updateCockpitChrome("B");
         break;
       case "mapPosition":
         state.track.currentSegment = msg.currentSegment ?? 0;
         state.track.startSegment = msg.startSegment ?? state.track.startSegment;
         if (msg.partCount) state.track.partCount = msg.partCount;
+        if ($("raceSegHint")) $("raceSegHint").textContent = String(state.track.currentSegment);
+        if ($("raceSpeedHint") && msg.targetSpeed != null) $("raceSpeedHint").textContent = String(msg.targetSpeed);
         logLine(
           msg.matched === false ? "err" : "in",
           `Bout ${msg.finishedSegment}→${msg.currentSegment}` +
@@ -1681,9 +1924,15 @@
         const stopped = (msg.stopped || []).join(", ");
         state.track.raceActive = false;
         state.track.mapping = false;
+        state.track.raceVehicle = null;
+        state.track.mappingVehicle = null;
         toast(stopped ? `Contrôle manuel · stop ${stopped}` : "Contrôle manuel");
+        pushEvent(`Contrôle manuel (${stopped || "override"})`, "notify");
         logLine("ok", `Priorité cockpit (${stopped || "override"})`);
+        updateMappingProgressUI();
         renderTrackMap();
+        updateCockpitChrome("A");
+        updateCockpitChrome("B");
         break;
       }
       case "turnSlowdownSet":
@@ -2273,9 +2522,75 @@
     }
   });
 
+  // ——— Navigation vues + Hold Hz + map tools ———
+  document.querySelectorAll(".nav-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setView(btn.dataset.view || "pilot"));
+  });
+  $("btnClearEvents")?.addEventListener("click", () => {
+    if ($("eventLog")) $("eventLog").innerHTML = "";
+  });
+  let _holdHzTimer = null;
+  $("holdHzSlider")?.addEventListener("input", () => {
+    const hz = Number($("holdHzSlider").value) || 3;
+    state.holdHz = hz;
+    if ($("holdHzValue")) $("holdHzValue").textContent = String(hz);
+    updateCockpitChrome("A");
+    updateCockpitChrome("B");
+    clearTimeout(_holdHzTimer);
+    _holdHzTimer = setTimeout(async () => {
+      try {
+        const data = await api("/api/hold/hz", {
+          method: "POST",
+          body: JSON.stringify({ hz }),
+        });
+        if (data.state) applySnapshot(data.state);
+      } catch (err) {
+        toast(err.message);
+      }
+    }, 200);
+  });
+  $("chkSegNumbers")?.addEventListener("change", (e) => {
+    state.showSegNumbers = !!e.target.checked;
+    renderTrackMap();
+  });
+  $("btnMapZoomIn")?.addEventListener("click", () => {
+    state.mapZoom = Math.min(2.5, (state.mapZoom || 1) * 1.15);
+    const svg = $("mapSvg");
+    if (svg) svg.style.transform = `scale(${state.mapZoom})`;
+  });
+  $("btnMapZoomOut")?.addEventListener("click", () => {
+    state.mapZoom = Math.max(0.6, (state.mapZoom || 1) / 1.15);
+    const svg = $("mapSvg");
+    if (svg) svg.style.transform = `scale(${state.mapZoom})`;
+  });
+  $("btnMapResetView")?.addEventListener("click", () => {
+    state.mapZoom = 1;
+    const svg = $("mapSvg");
+    if (svg) svg.style.transform = "scale(1)";
+  });
+  $("btnSegPopClose")?.addEventListener("click", () => {
+    if ($("segPopover")) $("segPopover").hidden = true;
+  });
+  $("btnSegSetStart")?.addEventListener("click", async () => {
+    const idx = Number($("segPopover")?.dataset.segId);
+    if (Number.isNaN(idx)) return;
+    try {
+      const data = await api("/api/track/start-segment", {
+        method: "POST",
+        body: JSON.stringify({ index: idx }),
+      });
+      applyTrackSnapshot(data.track);
+      toast(`Départ = segment ${idx}`);
+      if ($("segPopover")) $("segPopover").hidden = true;
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+
   async function boot() {
     loadSlots();
     if (state.slots.A) state.selectedId = state.slots.A;
+    setView("pilot");
     // WS + poll first so idle-shutdown / MQTT stay alive even if /api/state stalls.
     connectWs();
     startStatePoll();

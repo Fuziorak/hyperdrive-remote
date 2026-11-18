@@ -4,261 +4,238 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
-  <!-- CSS local uniquement (Wi‑Fi lab sans Internet / Google Fonts). -->
-  <link rel="stylesheet" href="/static/styles.css?v=20261118a" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261118b" />
 </head>
-<body>
-  <div class="bg-grid" aria-hidden="true"></div>
-  <div class="bg-haze" aria-hidden="true"></div>
+<body class="theme-dark">
+  <div class="app-bg" aria-hidden="true"></div>
 
   <header class="topbar">
     <div class="brand">
-      <span class="brand-stripe" aria-hidden="true"></span>
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M3 12h3l2-6h8l2 6h3v2h-2.2l-.8 4H6l-.8-4H3v-2zm5.4 0h7.2l-1-3H9.4l-1 3z"/>
+      </svg>
       <div>
         <p class="brand-kicker">UNIFR Robotics</p>
         <h1>Hyperdrive</h1>
       </div>
     </div>
 
-    <div class="focus-strip" id="selectedHero">
-      <div>
-        <p class="focus-label">Focus</p>
-        <strong id="heroTitle">Aucun</strong>
-        <p id="heroMeta">Garage → piste A/B</p>
-      </div>
-      <div class="focus-actions">
-        <button id="btnHeroConnect" class="btn primary" type="button">Connecter</button>
-        <button id="btnManualDrive" class="btn ghost" type="button" aria-pressed="false">WASD</button>
-        <button id="btnHeroPanic" class="btn danger" type="button">STOP</button>
-      </div>
-    </div>
+    <nav class="view-nav" aria-label="Vues">
+      <button type="button" class="nav-btn is-active" data-view="pilot">Pilotage</button>
+      <button type="button" class="nav-btn" data-view="race">Course</button>
+      <button type="button" class="nav-btn" data-view="config">Config</button>
+    </nav>
 
-    <div class="status-cluster">
-      <div class="status-chip" id="mqttPill" data-state="off">
+    <div class="top-status">
+      <div class="status-chip" id="mqttPill" data-state="off" title="État broker MQTT">
         <span class="dot"></span>
         <span id="mqttLabel">MQTT off</span>
       </div>
-      <div class="status-chip muted" id="scanPill">
-        <span id="scanLabel">Scan off</span>
+      <div class="status-chip muted" id="scanPill"><span id="scanLabel">Scan off</span></div>
+      <div class="status-chip muted" id="fleetCountChip">
+        <span id="fleetCountLabel">0 détectés · 0 conn.</span>
+      </div>
+      <div class="status-chip muted" id="kbFocusChip">
+        Clavier <strong id="kbFocusLabel">A</strong>
       </div>
       <div class="status-chip muted" id="callerPill">
-        <span>ID</span>
-        <code id="callerIdLabel">—</code>
+        ID <code id="callerIdLabel">—</code>
       </div>
-      <button id="btnRacePanic" class="btn danger compact" type="button">STOP ALL</button>
+      <button id="btnRacePanic" class="btn danger" type="button" title="Arrêt d’urgence A+B">STOP ALL</button>
     </div>
   </header>
 
-  <p id="manualDriveHint" class="manual-drive-hint" hidden>
-    <kbd>W</kbd>/<kbd>S</kbd> vitesse · <kbd>A</kbd>/<kbd>D</kbd> voie ·
-    <kbd>Espace</kbd> défauts · <kbd>1</kbd>/<kbd>2</kbd> piste A/B
-  </p>
+  <div id="notifyStack" class="notify-stack" aria-live="polite"></div>
+  <div id="toast" class="toast" hidden></div>
 
-  <main class="layout">
-    <section class="rail">
-      <article class="panel fleet-panel">
-        <div class="panel-head">
-          <h2>Garage</h2>
-          <p>1er → A · 2e → B</p>
-        </div>
-        <div id="vehicleList" class="vehicle-list">
-          <p class="empty">Scan en cours…</p>
-        </div>
-        <details class="advanced">
-          <summary>Ajout manuel</summary>
-          <div class="manual-add">
-            <input id="manualId" type="text" placeholder="ID véhicule" />
-            <input id="manualModel" type="text" placeholder="Modèle" />
-            <button id="btnAddManual" class="btn secondary" type="button">Ajouter</button>
-          </div>
-        </details>
-      </article>
-
-      <article class="panel race-panel">
-        <div class="panel-head">
-          <h2>Chrono</h2>
-          <p>Manuel</p>
-        </div>
-        <div class="race-timer-block">
-          <span class="race-label">Temps</span>
-          <div id="raceTimer" class="race-timer">00:00.00</div>
-        </div>
-        <div class="race-mini">
-          <div class="race-stat"><span class="race-label">Tour</span><strong id="raceLapCurrent">—</strong></div>
-          <div class="race-stat"><span class="race-label">Best</span><strong id="raceBest">—</strong></div>
-          <div class="race-stat"><span class="race-label">#</span><strong id="raceLapCount">0</strong></div>
-        </div>
-        <div class="btn-row race-actions">
-          <button id="btnRaceStart" class="btn primary" type="button">Départ</button>
-          <button id="btnRaceLap" class="btn accent" type="button">Tour</button>
-          <button id="btnRaceStop" class="btn ghost" type="button">Fin</button>
-          <button id="btnRaceReset" class="btn ghost" type="button">Reset</button>
-        </div>
-        <div id="raceLapList" class="race-laps"></div>
-      </article>
-
-      <article class="panel profiles-panel">
-        <div class="panel-head">
-          <h2>Profils</h2>
-          <p>Presets</p>
-        </div>
-        <div id="profileList" class="profile-list"></div>
-        <details class="advanced">
-          <summary>Sauver un profil</summary>
-          <div class="profile-save">
-            <input id="profileName" type="text" placeholder="Nom" />
-            <select id="profileTarget">
-              <option value="A">Depuis A</option>
-              <option value="B">Depuis B</option>
-            </select>
-            <button id="btnSaveProfile" class="btn secondary" type="button">Sauver</button>
-          </div>
-        </details>
-      </article>
-    </section>
-
-    <section class="drive-zone" id="cockpits">
+  <main class="workspace">
+    <!-- ========== PILOTAGE ========== -->
+    <section class="view view-pilot is-active" data-view-panel="pilot" id="viewPilot">
       <div class="drive-column" id="driveColumn">
-        <article class="panel cockpit" data-slot="A">
-          <div class="cockpit-head">
+        <!-- Cockpit A -->
+        <article class="cockpit panel" data-slot="A" id="cockpitA">
+          <header class="cockpit-head">
             <div>
               <p class="slot-tag">Piste A</p>
               <h2 class="cockpit-title">Libre</h2>
-              <p class="cockpit-id">Sélectionne un véhicule</p>
+              <p class="cockpit-id">Aucun véhicule</p>
+            </div>
+            <div class="cockpit-badges">
+              <span class="mode-badge" data-mode="idle">Manuel</span>
+              <span class="conn-badge" data-conn="off">Hors ligne</span>
             </div>
             <div class="btn-row tight">
-              <button class="btn primary btn-connect" type="button">On</button>
+              <button class="btn primary btn-connect" type="button">Connecter</button>
               <button class="btn ghost btn-disconnect" type="button">Off</button>
-              <button class="btn accent btn-assert" type="button">Sync</button>
               <button class="btn danger btn-panic" type="button">STOP</button>
-              <button class="btn ghost btn-clear-slot" type="button">×</button>
             </div>
+          </header>
+
+          <div class="conflict-banner" hidden>
+            <strong>Commande externe contradictoire</strong>
+            <span class="conflict-detail">—</span>
           </div>
-          <div class="hold-bar">
-            <label class="hold-toggle" title="Republication périodique de la dernière vitesse">
-              <input class="hold-toggle-input" type="checkbox" />
-              <span>Hold vitesse</span>
-            </label>
-          </div>
+
           <div class="telemetry">
-            <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
             <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
-            <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
-            <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
             <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
+            <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
+            <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
+            <div class="metric"><span>Mesurée</span><strong class="t-speed">—</strong></div>
             <div class="metric"><span>L/R</span><strong class="t-wheels">—</strong></div>
           </div>
+
           <div class="control-grid">
-            <div class="ctrl-block">
-              <h3>Vitesse</h3>
-              <div class="slider-block">
-                <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
-                <div class="slider-meta">
-                  <output class="speed-value">0</output>
-                  <span>mm/s</span>
-                </div>
+            <div class="ctrl-block speed-block">
+              <div class="ctrl-head">
+                <h3>Vitesse</h3>
+                <span class="cmd-hint">demandée <span class="t-cmd-speed">0</span> mm/s</span>
               </div>
-              <label class="inline">
-                Accel
-                <input class="accel-input" type="number" min="0" max="2500" value="1400" />
-              </label>
+              <div class="speed-readout"><output class="speed-value">0</output><span>mm/s</span></div>
+              <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
               <div class="btn-row tight speed-presets"></div>
+              <details class="advanced">
+                <summary>Accélération</summary>
+                <label class="inline">Accel <input class="accel-input" type="number" min="0" max="2500" value="1400" /></label>
+              </details>
             </div>
+
             <div class="ctrl-block">
               <h3>Voie</h3>
-              <div class="slider-block">
-                <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
-                <div class="slider-meta">
-                  <output class="lane-value">0</output>
-                  <span>offset</span>
-                </div>
-              </div>
+              <p class="hint-inline">Offset demandé (≠ position mesurée)</p>
+              <div class="slider-meta"><output class="lane-value">0</output><span>offset</span></div>
+              <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
               <div class="btn-row tight">
-                <button class="btn secondary btn-lane" type="button">Changer</button>
+                <button class="btn secondary btn-lane" type="button">Changer voie</button>
                 <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
               </div>
             </div>
+
             <div class="ctrl-block span-2">
-              <h3>Feux</h3>
+              <div class="ctrl-head">
+                <h3>Feux</h3>
+                <span class="light-active-label">effet : <strong class="t-light-preset">—</strong></span>
+              </div>
               <div class="presets light-presets"></div>
               <details class="advanced">
                 <summary>Feux avancés</summary>
                 <div class="lights-grid"></div>
-                <div class="btn-row" style="margin-top:0.6rem">
+                <div class="btn-row" style="margin-top:0.5rem">
                   <button class="btn accent btn-lights" type="button">Envoyer</button>
+                </div>
+              </details>
+            </div>
+
+            <div class="ctrl-block span-2 hold-block">
+              <div class="hold-bar">
+                <label class="hold-toggle">
+                  <input class="hold-toggle-input" type="checkbox" />
+                  <span>Hold actif — réaffirme vitesse (broker partagé)</span>
+                </label>
+                <div class="hold-meta">
+                  <span class="hold-hz-label">— Hz</span>
+                  <span class="hold-sent-label">0 envois</span>
+                  <span class="hold-last-label">dernier : —</span>
+                </div>
+              </div>
+              <details class="advanced">
+                <summary>Commandes secondaires</summary>
+                <div class="btn-row tight">
+                  <button class="btn accent btn-assert" type="button">Sync / Assert</button>
+                  <button class="btn ghost btn-clear-slot" type="button">Retirer slot</button>
+                  <button class="btn ghost btn-kb-focus" type="button">Focus clavier</button>
                 </div>
               </details>
             </div>
           </div>
         </article>
 
-        <article class="panel cockpit cockpit-b" data-slot="B">
-          <div class="cockpit-head">
+        <!-- Cockpit B (même structure) -->
+        <article class="cockpit panel cockpit-b" data-slot="B" id="cockpitB">
+          <header class="cockpit-head">
             <div>
               <p class="slot-tag slot-b">Piste B</p>
               <h2 class="cockpit-title">Libre</h2>
-              <p class="cockpit-id">Bouton +B sur un véhicule</p>
+              <p class="cockpit-id">Aucun véhicule</p>
+            </div>
+            <div class="cockpit-badges">
+              <span class="mode-badge" data-mode="idle">Manuel</span>
+              <span class="conn-badge" data-conn="off">Hors ligne</span>
             </div>
             <div class="btn-row tight">
-              <button class="btn primary btn-connect" type="button">On</button>
+              <button class="btn primary btn-connect" type="button">Connecter</button>
               <button class="btn ghost btn-disconnect" type="button">Off</button>
-              <button class="btn accent btn-assert" type="button">Sync</button>
               <button class="btn danger btn-panic" type="button">STOP</button>
-              <button class="btn ghost btn-clear-slot" type="button">×</button>
             </div>
-          </div>
-          <div class="hold-bar">
-            <label class="hold-toggle" title="Republication périodique de la dernière vitesse">
-              <input class="hold-toggle-input" type="checkbox" />
-              <span>Hold vitesse</span>
-            </label>
+          </header>
+          <div class="conflict-banner" hidden>
+            <strong>Commande externe contradictoire</strong>
+            <span class="conflict-detail">—</span>
           </div>
           <div class="telemetry">
-            <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
             <div class="metric"><span>Batterie</span><strong class="t-battery">—</strong></div>
-            <div class="metric"><span>Vitesse</span><strong class="t-speed">—</strong></div>
-            <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
             <div class="metric"><span>RSSI</span><strong class="t-rssi">—</strong></div>
+            <div class="metric"><span>Piste</span><strong class="t-track">—</strong></div>
+            <div class="metric"><span>Statut</span><strong class="t-status">—</strong></div>
+            <div class="metric"><span>Mesurée</span><strong class="t-speed">—</strong></div>
             <div class="metric"><span>L/R</span><strong class="t-wheels">—</strong></div>
           </div>
           <div class="control-grid">
-            <div class="ctrl-block">
-              <h3>Vitesse</h3>
-              <div class="slider-block">
-                <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
-                <div class="slider-meta">
-                  <output class="speed-value">0</output>
-                  <span>mm/s</span>
-                </div>
+            <div class="ctrl-block speed-block">
+              <div class="ctrl-head">
+                <h3>Vitesse</h3>
+                <span class="cmd-hint">demandée <span class="t-cmd-speed">0</span> mm/s</span>
               </div>
-              <label class="inline">
-                Accel
-                <input class="accel-input" type="number" min="0" max="2500" value="1400" />
-              </label>
+              <div class="speed-readout"><output class="speed-value">0</output><span>mm/s</span></div>
+              <input class="speed-slider" type="range" min="-100" max="1000" value="0" step="10" />
               <div class="btn-row tight speed-presets"></div>
+              <details class="advanced">
+                <summary>Accélération</summary>
+                <label class="inline">Accel <input class="accel-input" type="number" min="0" max="2500" value="1400" /></label>
+              </details>
             </div>
             <div class="ctrl-block">
               <h3>Voie</h3>
-              <div class="slider-block">
-                <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
-                <div class="slider-meta">
-                  <output class="lane-value">0</output>
-                  <span>offset</span>
-                </div>
-              </div>
+              <p class="hint-inline">Offset demandé (≠ position mesurée)</p>
+              <div class="slider-meta"><output class="lane-value">0</output><span>offset</span></div>
+              <input class="lane-slider" type="range" min="-68" max="68" value="0" step="1" />
               <div class="btn-row tight">
-                <button class="btn secondary btn-lane" type="button">Changer</button>
+                <button class="btn secondary btn-lane" type="button">Changer voie</button>
                 <button class="btn ghost btn-lane-cancel" type="button">Annuler</button>
               </div>
             </div>
             <div class="ctrl-block span-2">
-              <h3>Feux</h3>
+              <div class="ctrl-head">
+                <h3>Feux</h3>
+                <span class="light-active-label">effet : <strong class="t-light-preset">—</strong></span>
+              </div>
               <div class="presets light-presets"></div>
               <details class="advanced">
                 <summary>Feux avancés</summary>
                 <div class="lights-grid"></div>
-                <div class="btn-row" style="margin-top:0.6rem">
+                <div class="btn-row" style="margin-top:0.5rem">
                   <button class="btn accent btn-lights" type="button">Envoyer</button>
+                </div>
+              </details>
+            </div>
+            <div class="ctrl-block span-2 hold-block">
+              <div class="hold-bar">
+                <label class="hold-toggle">
+                  <input class="hold-toggle-input" type="checkbox" />
+                  <span>Hold actif — réaffirme vitesse (broker partagé)</span>
+                </label>
+                <div class="hold-meta">
+                  <span class="hold-hz-label">— Hz</span>
+                  <span class="hold-sent-label">0 envois</span>
+                  <span class="hold-last-label">dernier : —</span>
+                </div>
+              </div>
+              <details class="advanced">
+                <summary>Commandes secondaires</summary>
+                <div class="btn-row tight">
+                  <button class="btn accent btn-assert" type="button">Sync / Assert</button>
+                  <button class="btn ghost btn-clear-slot" type="button">Retirer slot</button>
+                  <button class="btn ghost btn-kb-focus" type="button">Focus clavier</button>
                 </div>
               </details>
             </div>
@@ -266,26 +243,10 @@
         </article>
       </div>
 
-      <aside class="panel map-panel" id="mapPanel">
+      <aside class="map-dock panel" id="mapPanel">
         <div class="panel-head">
-          <h2>Map</h2>
-          <p>Mapping · course auto</p>
-        </div>
-        <div class="map-status" id="mapStatus">Aucune map</div>
-        <div class="map-actions btn-row tight">
-          <button id="btnMapStart" class="btn accent" type="button">Mapper</button>
-          <button id="btnMapStop" class="btn ghost" type="button">Stop map</button>
-          <button id="btnRacePickMap" class="btn primary" type="button">Course map</button>
-          <button id="btnLaunchRace" class="btn accent" type="button">Lancer</button>
-          <button id="btnRaceMappedStop" class="btn danger" type="button">Stop</button>
-          <button id="btnLatency" class="btn secondary" type="button">Latence</button>
-        </div>
-        <div id="raceMapPicker" class="race-map-picker" hidden>
-          <div class="panel-head compact">
-            <h3>Choisir une map</h3>
-            <p>Puis « Lancer »</p>
-          </div>
-          <div id="raceMapList" class="race-map-list"></div>
+          <h2>Circuit</h2>
+          <p id="mapStatus">Aucune map</p>
         </div>
         <div class="map-meta">
           <span>Départ <strong id="mapStartLabel">—</strong></span>
@@ -293,20 +254,24 @@
           <span>Latence <strong id="mapLatencyLabel">—</strong></span>
         </div>
         <div class="map-canvas-wrap">
-          <svg id="mapSvg" class="map-svg" viewBox="0 0 420 360" role="img" aria-label="Piste">
+          <div class="map-toolbar">
+            <button type="button" class="btn ghost tiny" id="btnMapZoomIn" title="Zoom +">+</button>
+            <button type="button" class="btn ghost tiny" id="btnMapZoomOut" title="Zoom −">−</button>
+            <button type="button" class="btn ghost tiny" id="btnMapResetView" title="Recentrer">⌂</button>
+            <label class="tiny-check"><input type="checkbox" id="chkSegNumbers" checked /> n°</label>
+          </div>
+          <svg id="mapSvg" class="map-svg" viewBox="0 0 420 360" role="img" aria-label="Circuit">
             <defs>
               <filter id="mapGlow" x="-40%" y="-40%" width="180%" height="180%">
-                <feGaussianBlur stdDeviation="2.2" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
+                <feGaussianBlur stdDeviation="2" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
               </filter>
             </defs>
             <g id="mapTrackBase"></g>
             <g id="mapSegments"></g>
             <g id="mapLabels"></g>
             <circle id="mapCar" class="map-car" r="7" cx="-20" cy="-20" hidden></circle>
+            <circle id="mapCarB" class="map-car map-car-b" r="6" cx="-20" cy="-20" hidden></circle>
           </svg>
           <div class="map-legend">
             <span class="leg-straight">droit</span>
@@ -315,124 +280,214 @@
             <span class="leg-start">départ</span>
           </div>
         </div>
-
-        <div class="map-slowdown-tools">
-          <label class="slowdown-label">
-            Vitesse droits
-            <span class="slowdown-readout"><strong id="straightMaxValue">1000</strong></span>
-            <input id="straightMaxSlider" type="range" min="0" max="1000" step="10" value="1000" />
-          </label>
-          <label class="slowdown-label">
-            Ralent. virages
-            <span class="slowdown-readout"><strong id="turnSlowdownValue">40</strong>% → ~<strong id="turnSlowdownSpeedHint">300</strong></span>
-            <input id="turnSlowdownSlider" type="range" min="0" max="100" step="1" value="40" />
-          </label>
-          <label class="slowdown-label">
-            Frein sur droits
-            <span class="slowdown-readout">à <strong id="brakeFractionLabel">3/4</strong> · look <strong id="lookaheadValue">1</strong></span>
-            <select id="brakeFractionSelect">
-              <option value="0">Off</option>
-              <option value="0.6667">2/3</option>
-              <option value="0.75" selected>3/4</option>
-            </select>
-            <input id="lookaheadSlider" type="range" min="0" max="3" step="1" value="1" />
-          </label>
-        </div>
-
-        <div class="map-library">
-          <div class="map-course-tools">
-            <label>
-              Nom
-              <input id="courseNameInput" type="text" maxlength="64" placeholder="ovale-lab" autocomplete="off" />
-            </label>
-            <button id="btnCourseSave" class="btn accent" type="button">Sauver</button>
-            <label>
-              Maps
-              <select id="courseSelect">
-                <option value="">—</option>
-              </select>
-            </label>
-            <button id="btnCourseLoad" class="btn primary" type="button">Charger</button>
-            <button id="btnCourseDelete" class="btn ghost" type="button">Suppr.</button>
+        <div id="segPopover" class="seg-popover" hidden>
+          <strong id="segPopTitle">Segment</strong>
+          <p id="segPopBody"></p>
+          <div class="btn-row tight">
+            <button type="button" class="btn primary tiny" id="btnSegSetStart">Départ ici</button>
+            <button type="button" class="btn ghost tiny" id="btnSegPopClose">Fermer</button>
           </div>
         </div>
-
-        <details class="advanced">
-          <summary>Réglages map avancés</summary>
-          <div class="map-seg-tools">
-            <label>
-              Nb bouts
-              <input id="mapPartCount" type="number" min="1" max="50" value="8" />
-            </label>
-            <button id="btnPartCount" class="btn secondary" type="button">Fixer</button>
-            <label>
-              Segment
-              <input id="mapSegIndex" type="number" min="0" value="0" />
-            </label>
-            <label>
-              Vitesse max
-              <input id="mapSegSpeed" type="number" min="0" max="1000" step="10" value="700" />
-            </label>
-            <button id="btnMapSegSpeed" class="btn secondary" type="button">Appliquer</button>
-          </div>
-          <div class="map-curve-tools">
-            <label>
-              Gain auto
-              <input id="mapCurveGain" type="number" min="0.5" max="8" step="0.1" value="3.2" readonly />
-            </label>
-            <button id="btnRebuildMap" class="btn accent" type="button">Recalculer</button>
-          </div>
-        </details>
+        <div class="map-actions btn-row tight">
+          <button id="btnMapStart" class="btn accent" type="button">Mapper</button>
+          <button id="btnMapStop" class="btn ghost" type="button">Stop map</button>
+          <button id="btnLatency" class="btn secondary" type="button">Latence</button>
+        </div>
+        <div id="mappingProgressBox" class="mapping-progress" hidden>
+          <span id="mappingProgressText">—</span>
+          <div class="progress-bar"><div id="mappingProgressFill"></div></div>
+        </div>
       </aside>
     </section>
 
-    <details class="panel advanced-panel">
-      <summary>
-        <span>Réseau & debug</span>
-        <span class="summary-hint">MQTT · logs</span>
-      </summary>
-      <div class="advanced-body">
-        <div class="form-grid">
-          <label>
-            Broker
-            <input id="brokerHost" type="text" value="10.42.0.1" autocomplete="off" />
-          </label>
-          <label>
-            Port
-            <input id="brokerPort" type="number" value="1883" />
-          </label>
-          <label>
-            Host ID
-            <input id="hostId" type="text" value="hyperdrive" />
-          </label>
-          <label>
-            MQTT user
-            <input id="mqttUsername" type="text" value="Your_mom" autocomplete="username" />
-          </label>
-          <label>
-            MQTT password
-            <input id="mqttPassword" type="password" value="" placeholder="(vide si aucun)" autocomplete="current-password" />
-          </label>
+    <!-- ========== COURSE ========== -->
+    <section class="view view-race" data-view-panel="race" id="viewRace" hidden>
+      <div class="race-layout">
+        <div class="panel race-controls">
+          <div class="panel-head"><h2>Course map</h2><p>Automatisme sur carte</p></div>
+          <div class="btn-row tight">
+            <button id="btnRacePickMap" class="btn primary" type="button">Choisir map</button>
+            <button id="btnLaunchRace" class="btn accent" type="button">Lancer</button>
+            <button id="btnRaceMappedStop" class="btn danger" type="button">Stop course</button>
+          </div>
+          <div id="raceMapPicker" class="race-map-picker" hidden>
+            <div id="raceMapList" class="race-map-list"></div>
+          </div>
+          <p class="hint">Map active : <strong id="raceActiveMapName">—</strong></p>
+
+          <div class="map-slowdown-tools">
+            <label class="slowdown-label">
+              Vitesse droits
+              <span class="slowdown-readout"><strong id="straightMaxValue">1000</strong></span>
+              <input id="straightMaxSlider" type="range" min="0" max="1000" step="10" value="1000" />
+            </label>
+            <label class="slowdown-label">
+              Ralent. virages
+              <span class="slowdown-readout"><strong id="turnSlowdownValue">40</strong>% → ~<strong id="turnSlowdownSpeedHint">300</strong></span>
+              <input id="turnSlowdownSlider" type="range" min="0" max="100" step="1" value="40" />
+            </label>
+            <label class="slowdown-label">
+              Frein anticipé
+              <span class="slowdown-readout">à <strong id="brakeFractionLabel">3/4</strong> · look <strong id="lookaheadValue">1</strong></span>
+              <select id="brakeFractionSelect">
+                <option value="0">Off</option>
+                <option value="0.6667">2/3</option>
+                <option value="0.75" selected>3/4</option>
+              </select>
+              <input id="lookaheadSlider" type="range" min="0" max="3" step="1" value="1" />
+            </label>
+          </div>
+
+          <div class="map-library">
+            <div class="map-course-tools">
+              <label>Nom <input id="courseNameInput" type="text" maxlength="64" placeholder="ovale-lab" /></label>
+              <button id="btnCourseSave" class="btn accent" type="button">Sauver</button>
+              <label>Maps <select id="courseSelect"><option value="">—</option></select></label>
+              <button id="btnCourseLoad" class="btn primary" type="button">Charger</button>
+              <button id="btnCourseDelete" class="btn ghost" type="button">Suppr.</button>
+            </div>
+          </div>
+
+          <details class="advanced">
+            <summary>Réglages map avancés</summary>
+            <div class="map-seg-tools">
+              <label>Nb bouts <input id="mapPartCount" type="number" min="1" max="50" value="8" /></label>
+              <button id="btnPartCount" class="btn secondary" type="button">Fixer</button>
+              <label>Segment <input id="mapSegIndex" type="number" min="0" value="0" /></label>
+              <label>Vitesse max <input id="mapSegSpeed" type="number" min="0" max="1000" step="10" value="700" /></label>
+              <button id="btnMapSegSpeed" class="btn secondary" type="button">Appliquer</button>
+            </div>
+            <div class="map-curve-tools">
+              <label>Gain auto <input id="mapCurveGain" type="number" min="0.5" max="8" step="0.1" value="3.2" readonly /></label>
+              <button id="btnRebuildMap" class="btn accent" type="button">Recalculer</button>
+            </div>
+          </details>
         </div>
-        <div class="btn-row">
-          <button id="btnConnect" class="btn primary" type="button">Reconnecter</button>
-          <button id="btnDisconnect" class="btn ghost" type="button">Déconnecter</button>
-          <button id="btnDiscover" class="btn accent" type="button">Rescanner</button>
-          <button id="btnStopScan" class="btn ghost" type="button">Stop scan</button>
+
+        <div class="panel race-chrono">
+          <div class="panel-head"><h2>Chrono</h2><p>Manuel (pas de traits tour auto fiables)</p></div>
+          <div class="race-timer-block">
+            <span class="race-label">Temps</span>
+            <div id="raceTimer" class="race-timer">00:00.00</div>
+          </div>
+          <div class="race-mini">
+            <div class="race-stat"><span class="race-label">Tour</span><strong id="raceLapCurrent">—</strong></div>
+            <div class="race-stat"><span class="race-label">Best</span><strong id="raceBest">—</strong></div>
+            <div class="race-stat"><span class="race-label">#</span><strong id="raceLapCount">0</strong></div>
+          </div>
+          <div class="btn-row race-actions">
+            <button id="btnRaceStart" class="btn primary" type="button">Départ</button>
+            <button id="btnRaceLap" class="btn accent" type="button">Tour</button>
+            <button id="btnRaceStop" class="btn ghost" type="button">Fin</button>
+            <button id="btnRaceReset" class="btn ghost" type="button">Reset</button>
+          </div>
+          <div id="raceLapList" class="race-laps"></div>
+          <p class="hint" id="raceAutoHint">Course auto : segment <strong id="raceSegHint">—</strong> · cible <strong id="raceSpeedHint">—</strong></p>
         </div>
-        <p class="hint" id="debugPath">Fichier : <code>hyperdrive-remote/debug.log</code></p>
-        <div class="btn-row">
-          <button id="btnDebugSnapshot" class="btn secondary" type="button">Snapshot</button>
-          <button id="btnDebugClear" class="btn ghost" type="button">Vider debug.log</button>
-          <button id="btnDebugOpenHint" class="btn ghost" type="button">Chemin</button>
-          <button id="btnClearLog" class="btn ghost" type="button">Vider journal</button>
+
+        <div class="panel race-map-slot" id="raceMapSlot">
+          <p class="hint">La carte du circuit reste visible dans Pilotage. Utilisez l’onglet Pilotage pour le tracé plein écran.</p>
+          <div id="selectedHero" class="focus-strip compact">
+            <div>
+              <p class="focus-label">Focus</p>
+              <strong id="heroTitle">Aucun</strong>
+              <p id="heroMeta">—</p>
+            </div>
+            <div class="focus-actions">
+              <button id="btnHeroConnect" class="btn primary" type="button">Connecter</button>
+              <button id="btnManualDrive" class="btn ghost" type="button" aria-pressed="false">WASD</button>
+              <button id="btnHeroPanic" class="btn danger" type="button">STOP</button>
+            </div>
+          </div>
+          <p id="manualDriveHint" class="manual-drive-hint" hidden>
+            <kbd>W</kbd>/<kbd>S</kbd> vitesse · <kbd>A</kbd>/<kbd>D</kbd> voie · <kbd>Espace</kbd> défauts · <kbd>1</kbd>/<kbd>2</kbd> A/B
+          </p>
         </div>
-        <pre id="log" class="log"></pre>
       </div>
-    </details>
+    </section>
+
+    <!-- ========== CONFIG ========== -->
+    <section class="view view-config" data-view-panel="config" id="viewConfig" hidden>
+      <div class="config-grid">
+        <article class="panel">
+          <div class="panel-head"><h2>Garage</h2><p>Découverte &amp; assignation A/B</p></div>
+          <div class="btn-row tight">
+            <button id="btnDiscover" class="btn accent" type="button">Rescanner</button>
+            <button id="btnStopScan" class="btn ghost" type="button">Stop scan</button>
+          </div>
+          <div id="vehicleList" class="vehicle-list"><p class="empty">Aucun véhicule…</p></div>
+          <details class="advanced">
+            <summary>Ajout manuel</summary>
+            <div class="manual-add">
+              <input id="manualId" type="text" placeholder="ID véhicule" />
+              <input id="manualModel" type="text" placeholder="Modèle" />
+              <button id="btnAddManual" class="btn secondary" type="button">Ajouter</button>
+            </div>
+          </details>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><h2>Profils</h2><p>Presets locaux</p></div>
+          <div id="profileList" class="profile-list"></div>
+          <details class="advanced">
+            <summary>Sauver un profil</summary>
+            <div class="profile-save">
+              <input id="profileName" type="text" placeholder="Nom" />
+              <select id="profileTarget">
+                <option value="A">Depuis A</option>
+                <option value="B">Depuis B</option>
+              </select>
+              <button id="btnSaveProfile" class="btn secondary" type="button">Sauver</button>
+            </div>
+          </details>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><h2>MQTT</h2><p>Broker lab hyperdrive</p></div>
+          <div class="form-grid">
+            <label>Broker <input id="brokerHost" type="text" value="10.42.0.1" /></label>
+            <label>Port <input id="brokerPort" type="number" value="1883" /></label>
+            <label>Host ID <input id="hostId" type="text" value="hyperdrive" /></label>
+            <label>User <input id="mqttUsername" type="text" value="Your_mom" autocomplete="username" /></label>
+            <label>Password <input id="mqttPassword" type="password" value="" placeholder="(vide)" autocomplete="current-password" /></label>
+          </div>
+          <div class="btn-row">
+            <button id="btnConnect" class="btn primary" type="button">Reconnecter</button>
+            <button id="btnDisconnect" class="btn ghost" type="button">Déconnecter</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><h2>Hold</h2><p>Fréquence de réaffirmation (1–10 Hz)</p></div>
+          <label class="slowdown-label">
+            Fréquence globale
+            <span class="slowdown-readout"><strong id="holdHzValue">3</strong> Hz</span>
+            <input id="holdHzSlider" type="range" min="1" max="10" step="0.5" value="3" />
+          </label>
+          <p class="hint">Réaffirme la vitesse (et les feux moins souvent). Ne republie pas les changements de voie.</p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><h2>Événements</h2><p>Historique compact</p></div>
+          <div id="eventLog" class="event-log"></div>
+          <button type="button" class="btn ghost tiny" id="btnClearEvents">Vider</button>
+        </article>
+
+        <article class="panel span-all">
+          <div class="panel-head"><h2>Diagnostic</h2><p>Journal technique MQTT</p></div>
+          <p class="hint" id="debugPath">Fichier : <code>hyperdrive-remote/debug.log</code></p>
+          <div class="btn-row">
+            <button id="btnDebugSnapshot" class="btn secondary" type="button">Snapshot</button>
+            <button id="btnDebugClear" class="btn ghost" type="button">Vider debug.log</button>
+            <button id="btnDebugOpenHint" class="btn ghost" type="button">Chemin</button>
+            <button id="btnClearLog" class="btn ghost" type="button">Vider journal</button>
+          </div>
+          <pre id="log" class="log"></pre>
+        </article>
+      </div>
+    </section>
   </main>
 
-  <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=20261118a"></script>
+  <script src="/static/app.js?v=20261118b"></script>
 </body>
 </html>

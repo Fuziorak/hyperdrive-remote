@@ -1,0 +1,47 @@
+NOTES REFONTE UI — Hyperdrive Remote (2026-11-18)
+================================================
+
+Fichiers modifiés
+-----------------
+- static/index.html   : 3 vues (Pilotage / Course / Config), cockpits modernisés
+- static/styles.css   : thème dark dashboard (teal / amber / rouge)
+- static/app.js       : navigation, Hold UI, conflits, progression mapping, notifs
+- mqtt_bridge.py      : Hold Hz configurable, stats, feux périodiques, intents externes
+- app.py              : POST /api/hold/hz + hold API avec hz
+
+Améliorations Hold
+------------------
+- Fréquence 1–10 Hz (défaut 3), réglable dans Config
+- Stats : nb d’envois, dernier envoi, badge « Hold actif »
+- Réaffirme vitesse à chaque tick ; feux tous les 6 ticks
+- Ne republie PAS les changements de voie
+- STOP coupe Hold + timers de freinage course
+
+Conflits MQTT
+-------------
+- Subscribe Anki/Vehicles/U/+/I/+
+- Compare intents d’autres callerId avec nos consignes
+- Bannière cockpit + notification (anti-spam 3 s)
+- Alerte expire ~4 s sans nouveau conflit
+- Limitation : on voit un callerId, pas l’identité humaine
+- Limitation : publier STOP n’empêche pas un autre client de continuer
+
+Chrono
+------
+- Toujours manuel (pas de traits « tour » fiables)
+- Affiché clairement comme manuel dans l’UI Course
+
+Tests effectués
+---------------
+- python -m py_compile mqtt_bridge.py app.py track_map.py  → OK
+- Validation physique voitures / broker partagé : À FAIRE sur lab Wi‑Fi hyperdrive
+
+À vérifier sur matériel
+-----------------------
+1. Navigation Pilotage / Course / Config
+2. Hold A/B indépendants + curseur Hz
+3. STOP / STOP ALL (Hold off, course stop)
+4. Conflit : 2 remotes, vitesses différentes → bannière
+5. Mapping 2 tours + barre de progression
+6. Course map + frein 2/3–3/4 + feux
+7. WASD désactivé dans les champs texte
