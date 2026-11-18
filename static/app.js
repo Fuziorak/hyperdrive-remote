@@ -232,33 +232,103 @@
     return "0.6667";
   }
 
-  function syncTurnSlowdownUI(pct) {
+  const $ = (id) => document.getElementById(id);
+
+  /** Poll/WS ne doivent pas écraser un champ focusé, dragé, ou pas encore sync serveur. */
+  function isUserEditing(el) {
+    if (!el) return false;
+    if (document.activeElement === el) return true;
+    if (el.dataset?.userEditing === "1") return true;
+    if (el.dataset?.userDirty === "1") return true;
+    return false;
+  }
+
+  function markFieldDirty(elOrId) {
+    const el = typeof elOrId === "string" ? $(elOrId) : elOrId;
+    if (!el) return;
+    el.dataset.userDirty = "1";
+    el.dataset.userEditing = "1";
+  }
+
+  function clearFieldDirty(elOrId) {
+    const el = typeof elOrId === "string" ? $(elOrId) : elOrId;
+    if (!el) return;
+    el.dataset.userDirty = "0";
+    el.dataset.userEditing = "0";
+  }
+
+  function setFieldValue(elOrId, value, { force = false } = {}) {
+    const el = typeof elOrId === "string" ? $(elOrId) : elOrId;
+    if (!el) return false;
+    const next = String(value);
+    if (!force && isUserEditing(el)) {
+      // Serveur rattrapé = on peut re-sync plus tard
+      if (el.value === next) clearFieldDirty(el);
+      return false;
+    }
+    if (el.value !== next) el.value = next;
+    clearFieldDirty(el);
+    return true;
+  }
+
+  function watchUserEditing(...ids) {
+    ids.forEach((id) => {
+      const el = $(id);
+      if (!el || el.dataset.editWatch === "1") return;
+      el.dataset.editWatch = "1";
+      el.addEventListener("focus", () => { el.dataset.userEditing = "1"; });
+      el.addEventListener("pointerdown", () => { el.dataset.userEditing = "1"; });
+      el.addEventListener("input", () => markFieldDirty(el));
+      el.addEventListener("change", () => markFieldDirty(el));
+      el.addEventListener("blur", () => {
+        // Laisse finir un drag/slider ; dirty reste tant que serveur ≠ valeur locale
+        setTimeout(() => { el.dataset.userEditing = "0"; }, 450);
+      });
+    });
+  }
+
+  function syncTurnSlowdownUI(pct, { force = false } = {}) {
+    const el = $("turnSlowdownSlider");
+    if (!force && isUserEditing(el)) {
+      state.track.turnSlowdownPct = Math.max(0, Math.min(100, Number(el.value) || 0));
+      return;
+    }
     const v = Math.max(0, Math.min(100, Number(pct) || 0));
     state.track.turnSlowdownPct = v;
-    if ($("turnSlowdownSlider")) $("turnSlowdownSlider").value = String(v);
+    setFieldValue(el, v, { force });
     if ($("turnSlowdownValue")) $("turnSlowdownValue").textContent = String(v);
     if ($("turnSlowdownSpeedHint")) $("turnSlowdownSpeedHint").textContent = String(curveSpeedHint(v));
   }
 
-  function syncStraightMaxUI(speed) {
+  function syncStraightMaxUI(speed, { force = false } = {}) {
+    const el = $("straightMaxSlider");
+    if (!force && isUserEditing(el)) {
+      state.track.straightMaxSpeed = Math.max(0, Math.min(1000, Number(el.value) || 0));
+      return;
+    }
     const v = Math.max(0, Math.min(1000, Number(speed) || 0));
     state.track.straightMaxSpeed = v;
-    if ($("straightMaxSlider")) $("straightMaxSlider").value = String(v);
+    setFieldValue(el, v, { force });
     if ($("straightMaxValue")) $("straightMaxValue").textContent = String(v);
   }
 
-  function syncLookaheadUI(segments, brakeAtFraction) {
+  function syncLookaheadUI(segments, brakeAtFraction, { force = false } = {}) {
+    const lookEl = $("lookaheadSlider");
+    const brakeEl = $("brakeFractionSelect");
+    if (!force && (isUserEditing(lookEl) || isUserEditing(brakeEl))) {
+      state.track.lookaheadSegments = Math.max(0, Math.min(3, Number(lookEl?.value) || 0));
+      state.track.brakeAtFraction = Math.max(0, Math.min(0.95, Number(brakeEl?.value) || 0));
+      return;
+    }
     const look = Math.max(0, Math.min(3, Number(segments) ?? 1));
     const frac = Math.max(0, Math.min(0.95, Number(brakeAtFraction) ?? 0.75));
     state.track.lookaheadSegments = look;
     state.track.brakeAtFraction = frac;
-    if ($("lookaheadSlider")) $("lookaheadSlider").value = String(look);
+    setFieldValue(lookEl, look, { force });
     if ($("lookaheadValue")) $("lookaheadValue").textContent = String(look);
-    if ($("brakeFractionSelect")) $("brakeFractionSelect").value = nearestBrakeFractionOption(frac);
+    setFieldValue(brakeEl, nearestBrakeFractionOption(frac), { force });
     if ($("brakeFractionLabel")) $("brakeFractionLabel").textContent = brakeFractionLabel(frac);
   }
-
-  const $ = (id) => document.getElementById(id);
   const logEl = $("log");
   const toastEl = $("toast");
 
@@ -400,14 +470,20 @@
     state.track.lastSample = track.lastSample || null;
     state.track.comparisons = track.comparisons || state.track.map?.comparisons || null;
     state.track.courses = track.courses || [];
-    state.track.partCount = track.partCount || track.map?.partCount || state.track.partCount;
+    // partCount : ne pas écraser état/champ tant que l’utilisateur n’a pas sync
+    const partEl = $("mapPartCount");
+    const partLocked = isUserEditing(partEl);
+    if (!partLocked && (track.partCount != null || track.map?.partCount != null)) {
+      state.track.partCount = track.partCount || track.map?.partCount || state.track.partCount;
+    } else if (partLocked && partEl) {
+      state.track.partCount = Math.max(1, Math.min(50, Number(partEl.value) || 1));
+    }
     state.track.curveGain = track.curveGain ?? track.map?.curveGain ?? state.track.curveGain;
-    if (state.track.partCount && $("mapPartCount")) {
-      $("mapPartCount").value = String(state.track.partCount);
+    if (!partLocked && state.track.partCount != null && setFieldValue(partEl, state.track.partCount)) {
       if ($("mapPartCountHint")) $("mapPartCountHint").textContent = String(state.track.partCount);
     }
-    if ($("mapCurveGain") && state.track.curveGain != null) {
-      $("mapCurveGain").value = String(state.track.curveGain);
+    if (state.track.curveGain != null) {
+      setFieldValue("mapCurveGain", state.track.curveGain);
     }
     if (track.turnSlowdownPct != null) syncTurnSlowdownUI(track.turnSlowdownPct);
     if (track.straightMaxSpeed != null) syncStraightMaxUI(track.straightMaxSpeed);
@@ -931,15 +1007,18 @@
 
   function applySettingsToCockpitUI(slot, settings) {
     const root = cockpitEl(slot);
-    if (settings.velocity != null) {
-      root.querySelector(".speed-slider").value = settings.velocity;
+    const speedEl = root.querySelector(".speed-slider");
+    const accelEl = root.querySelector(".accel-input");
+    const laneEl = root.querySelector(".lane-slider");
+    if (settings.velocity != null && !isUserEditing(speedEl)) {
+      speedEl.value = settings.velocity;
       root.querySelector(".speed-value").textContent = String(settings.velocity);
     }
-    if (settings.acceleration != null) {
-      root.querySelector(".accel-input").value = settings.acceleration;
+    if (settings.acceleration != null && !isUserEditing(accelEl)) {
+      accelEl.value = settings.acceleration;
     }
-    if (settings.lane != null) {
-      root.querySelector(".lane-slider").value = settings.lane;
+    if (settings.lane != null && !isUserEditing(laneEl)) {
+      laneEl.value = settings.lane;
       root.querySelector(".lane-value").textContent = String(settings.lane);
     }
   }
@@ -1544,8 +1623,14 @@
     if (snap.holdStats) state.holdStats = snap.holdStats;
     if (snap.conflicts) state.conflicts = snap.conflicts;
     if (snap.desired) state.desired = snap.desired;
-    if ($("holdHzSlider")) $("holdHzSlider").value = String(state.holdHz);
-    if ($("holdHzValue")) $("holdHzValue").textContent = String(state.holdHz);
+    {
+      const hzEl = $("holdHzSlider");
+      if (isUserEditing(hzEl)) {
+        state.holdHz = Number(hzEl.value) || state.holdHz;
+      } else if (setFieldValue(hzEl, state.holdHz) && $("holdHzValue")) {
+        $("holdHzValue").textContent = String(state.holdHz);
+      }
+    }
     if ($("mqttPill")) $("mqttPill").dataset.state = state.mqttConnected ? "on" : "off";
     if ($("mqttLabel")) {
       $("mqttLabel").textContent = state.mqttConnected
@@ -1553,8 +1638,8 @@
         : "MQTT déconnecté";
     }
     if ($("scanLabel")) $("scanLabel").textContent = snap.scanning ? "Scan en cours" : "Scan off";
-    if (snap.hostId && $("hostId")) $("hostId").value = snap.hostId;
-    if (snap.mqttUsername != null && $("mqttUsername")) $("mqttUsername").value = snap.mqttUsername;
+    if (snap.hostId != null) setFieldValue("hostId", snap.hostId);
+    if (snap.mqttUsername != null) setFieldValue("mqttUsername", snap.mqttUsername);
     if (snap.callerId && $("callerIdLabel")) $("callerIdLabel").textContent = snap.callerId;
     if (snap.track) applyTrackSnapshot(snap.track);
     renderVehicles();
@@ -1760,8 +1845,9 @@
         break;
       case "holdHzSet":
         state.holdHz = Number(msg.holdHz) || 3;
-        if ($("holdHzSlider")) $("holdHzSlider").value = String(state.holdHz);
-        if ($("holdHzValue")) $("holdHzValue").textContent = String(state.holdHz);
+        if (setFieldValue("holdHzSlider", state.holdHz) && $("holdHzValue")) {
+          $("holdHzValue").textContent = String(state.holdHz);
+        }
         updateCockpitChrome("A");
         updateCockpitChrome("B");
         break;
@@ -1959,7 +2045,9 @@
         break;
       case "partCountSet":
         state.track.partCount = msg.partCount;
-        if ($("mapPartCount")) $("mapPartCount").value = String(msg.partCount);
+        if (setFieldValue("mapPartCount", msg.partCount) && $("mapPartCountHint")) {
+          $("mapPartCountHint").textContent = String(msg.partCount);
+        }
         toast(`Course = ${msg.partCount} bouts`);
         break;
       case "manualOverride": {
@@ -2249,8 +2337,30 @@
     }
   });
 
+  watchUserEditing(
+    "mapPartCount",
+    "mapSegIndex",
+    "mapSegSpeed",
+    "courseNameInput",
+    "turnSlowdownSlider",
+    "straightMaxSlider",
+    "lookaheadSlider",
+    "brakeFractionSelect",
+    "holdHzSlider",
+    "brokerHost",
+    "brokerPort",
+    "hostId",
+    "mqttUsername",
+    "mqttPassword",
+    "manualId",
+    "manualModel",
+    "profileName"
+  );
+
   $("mapPartCount")?.addEventListener("input", () => {
     const n = Math.max(1, Math.min(50, Number($("mapPartCount").value) || 1));
+    markFieldDirty("mapPartCount");
+    state.track.partCount = n; // garder la valeur locale malgré les polls
     if ($("mapPartCountHint")) $("mapPartCountHint").textContent = String(n);
   });
 
@@ -2258,7 +2368,7 @@
     try {
       const id = requireSlot("A");
       const partCount = Math.max(1, Math.min(50, Number($("mapPartCount")?.value) || 1));
-      if ($("mapPartCount")) $("mapPartCount").value = String(partCount);
+      setFieldValue("mapPartCount", partCount, { force: true });
       if ($("mapPartCountHint")) $("mapPartCountHint").textContent = String(partCount);
       // Un seul appel atomique : évite qu'un part-count/rebuild sur une vieille map
       // interfère, et garde le mapping actif même si le publish vitesse rate.
@@ -2276,7 +2386,8 @@
       state.track.rawCount = 0;
       state.track.lapsDone = 0;
       state.track.partCount = data.partCount || partCount;
-      if ($("mapPartCount")) $("mapPartCount").value = String(state.track.partCount);
+      setFieldValue("mapPartCount", state.track.partCount, { force: true });
+      clearFieldDirty("mapPartCount");
       applyTrackSnapshot(data.track || { mapping: true, map: null, preview: null, rawCount: 0 });
       if (data.speedOk === false) {
         toast(`Mapping démarré (vitesse non publiée: ${data.speedError || "MQTT?"})`);
@@ -2330,7 +2441,10 @@
   let _slowdownTimer = null;
   $("turnSlowdownSlider").addEventListener("input", () => {
     const pct = Number($("turnSlowdownSlider").value) || 0;
-    syncTurnSlowdownUI(pct);
+    markFieldDirty("turnSlowdownSlider");
+    state.track.turnSlowdownPct = pct;
+    if ($("turnSlowdownValue")) $("turnSlowdownValue").textContent = String(pct);
+    if ($("turnSlowdownSpeedHint")) $("turnSlowdownSpeedHint").textContent = String(curveSpeedHint(pct));
     clearTimeout(_slowdownTimer);
     _slowdownTimer = setTimeout(async () => {
       try {
@@ -2338,6 +2452,7 @@
           method: "POST",
           body: JSON.stringify({ pct }),
         });
+        clearFieldDirty("turnSlowdownSlider");
         applyTrackSnapshot(data.track);
       } catch (err) {
         toast(err.message);
@@ -2348,7 +2463,9 @@
   let _straightTimer = null;
   $("straightMaxSlider").addEventListener("input", () => {
     const speed = Number($("straightMaxSlider").value) || 0;
-    syncStraightMaxUI(speed);
+    markFieldDirty("straightMaxSlider");
+    state.track.straightMaxSpeed = speed;
+    if ($("straightMaxValue")) $("straightMaxValue").textContent = String(speed);
     clearTimeout(_straightTimer);
     _straightTimer = setTimeout(async () => {
       try {
@@ -2356,6 +2473,7 @@
           method: "POST",
           body: JSON.stringify({ speed }),
         });
+        clearFieldDirty("straightMaxSlider");
         applyTrackSnapshot(data.track);
       } catch (err) {
         toast(err.message);
@@ -2367,7 +2485,12 @@
   function pushLookahead() {
     const segments = Number($("lookaheadSlider").value) || 0;
     const brakeAtFraction = Number($("brakeFractionSelect").value) || 0;
-    syncLookaheadUI(segments, brakeAtFraction);
+    markFieldDirty("lookaheadSlider");
+    markFieldDirty("brakeFractionSelect");
+    state.track.lookaheadSegments = segments;
+    state.track.brakeAtFraction = brakeAtFraction;
+    if ($("lookaheadValue")) $("lookaheadValue").textContent = String(segments);
+    if ($("brakeFractionLabel")) $("brakeFractionLabel").textContent = brakeFractionLabel(brakeAtFraction);
     clearTimeout(_lookaheadTimer);
     _lookaheadTimer = setTimeout(async () => {
       try {
@@ -2375,6 +2498,8 @@
           method: "POST",
           body: JSON.stringify({ segments, brakeAtFraction }),
         });
+        clearFieldDirty("lookaheadSlider");
+        clearFieldDirty("brakeFractionSelect");
         applyTrackSnapshot(data.track);
       } catch (err) {
         toast(err.message);
@@ -2439,8 +2564,9 @@
         method: "POST",
         body: JSON.stringify({ partCount }),
       });
+      setFieldValue("mapPartCount", data.partCount, { force: true });
+      clearFieldDirty("mapPartCount");
       applyTrackSnapshot(data.track);
-      $("mapPartCount").value = String(data.partCount);
       toast(`Nombre de bouts = ${data.partCount}`);
     } catch (err) {
       toast(err.message);
@@ -2581,6 +2707,7 @@
   let _holdHzTimer = null;
   $("holdHzSlider")?.addEventListener("input", () => {
     const hz = Number($("holdHzSlider").value) || 3;
+    markFieldDirty("holdHzSlider");
     state.holdHz = hz;
     if ($("holdHzValue")) $("holdHzValue").textContent = String(hz);
     updateCockpitChrome("A");
@@ -2592,6 +2719,7 @@
           method: "POST",
           body: JSON.stringify({ hz }),
         });
+        clearFieldDirty("holdHzSlider");
         if (data.state) applySnapshot(data.state);
       } catch (err) {
         toast(err.message);
