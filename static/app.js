@@ -549,22 +549,25 @@
 
   function updateHero() {
     const hero = $("selectedHero");
+    const title = $("heroTitle");
+    const meta = $("heroMeta");
+    if (!hero || !title || !meta) return;
     const id = state.selectedId || state.slots.A;
     const v = (id && state.vehicles[id]) || null;
     if (!v) {
-      $("heroTitle").textContent = "Aucun";
-      $("heroMeta").textContent = "Clique un véhicule dans la liste pour commencer";
+      title.textContent = "Aucun";
+      meta.textContent = "Garage → piste A/B";
       hero.classList.remove("active");
       return;
     }
-    $("heroTitle").textContent = v.model || "Véhicule";
+    title.textContent = v.model || "Véhicule";
     const bits = [
       id,
       v.connected ? "connecté" : (v.status || "détecté"),
       v.batteryLevel != null ? `${v.batteryLevel}%` : null,
       v.speed != null ? `${v.speed} mm/s` : null,
     ].filter(Boolean);
-    $("heroMeta").textContent = bits.join(" · ");
+    meta.textContent = bits.join(" · ");
     hero.classList.remove("active");
     void hero.offsetWidth;
     hero.classList.add("active");
