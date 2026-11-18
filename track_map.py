@@ -1192,12 +1192,12 @@ class TrackController:
                 return
 
             sample["maxSpeed"] = 700
+            n_parts = int(self.part_count) if self.part_count else 0
 
-            # ——— Tour 2 : enregistrer TOUT, numéroté, puis comparer ———
+            # ——— Tour 2 : exactement n mesures, puis stop ———
             if self._laps_done >= 1 and self._lap_len > 0:
                 bout_id = len(self._lap2)
                 if bout_id >= self._lap_len:
-                    # Déjà assez de bouts — ignorer le surplus après finalisation
                     return
                 sample["id"] = bout_id
                 expected = self._lap1[bout_id]
@@ -1215,29 +1215,22 @@ class TrackController:
                         confidence=conf,
                         expected={"left": expected["left"], "right": expected["right"]},
                         kept=True,
+                        targetTotal=self._lap_len * 2,
+                        totalKept=len(self._lap1) + len(self._lap2),
                     )
                 )
                 if len(self._lap2) >= self._lap_len:
-                    self._laps_done = 2
-                    self.mapping = False
-                    self.mapping_vehicle = None
-                    self._finalize_map()
-                    self._emit(
-                        {
-                            "type": "mappingComplete",
-                            "map": self.map,
-                            "lapsDone": 2,
-                            "comparisons": self._last_comparisons,
-                        }
-                    )
+                    self._complete_mapping(vehicle_id)
                 return
 
-            # ——— Tour 1 : enregistrer tous les bouts numérotés ———
-            # Fermeture si partCount atteint
-            if self.part_count and len(self._lap1) >= self.part_count:
-                # Passage tour 2 : cette mesure = bout 0 du tour 2
+            # ——— Tour 1 ———
+            # Si partCount connu : on prend exactement n bouts, puis on passe au tour 2.
+            # Sans partCount : fermeture naturelle quand on retombe sur le 1er bout.
+            if n_parts and len(self._lap1) >= n_parts:
+                # Ne devrait plus arriver (passage tour 2 déjà fait) — sécurité
                 self._laps_done = 1
                 self._lap_len = len(self._lap1)
+                # cette mesure = 1er bout du tour 2
                 sample["id"] = 0
                 expected = self._lap1[0]
                 matched = samples_match(sample, expected)
@@ -1255,26 +1248,20 @@ class TrackController:
                         expected={"left": expected["left"], "right": expected["right"]},
                         lapClosed=True,
                         kept=True,
+                        targetTotal=self._lap_len * 2,
+                        totalKept=len(self._lap1) + len(self._lap2),
                     )
                 )
                 if len(self._lap2) >= self._lap_len:
-                    self._laps_done = 2
-                    self.mapping = False
-                    self.mapping_vehicle = None
-                    self._finalize_map()
-                    self._emit(
-                        {
-                            "type": "mappingComplete",
-                            "map": self.map,
-                            "lapsDone": 2,
-                            "comparisons": self._last_comparisons,
-                        }
-                    )
+                    self._complete_mapping(vehicle_id)
                 return
 
-            # Fermeture naturelle : assez de bouts + mesure ≈ 1er bout → début tour 2
-            enough = len(self._lap1) >= _MIN_SEGMENTS
-            if enough and samples_match(sample, self._lap1[0]):
+            # Fermeture naturelle (seulement si pas de partCount) : retombe ≈ 1er bout
+            if (
+                not n_parts
+                and len(self._lap1) >= _MIN_SEGMENTS
+                and samples_match(sample, self._lap1[0])
+            ):
                 self._laps_done = 1
                 self._lap_len = len(self._lap1)
                 sample["id"] = 0
@@ -1292,8 +1279,12 @@ class TrackController:
                         expected={"left": self._lap1[0]["left"], "right": self._lap1[0]["right"]},
                         lapClosed=True,
                         kept=True,
+                        targetTotal=self._lap_len * 2,
+                        totalKept=len(self._lap1) + len(self._lap2),
                     )
                 )
+                if len(self._lap2) >= self._lap_len:
+                    self._complete_mapping(vehicle_id)
                 return
 
             # Continuer le tour 1
@@ -1301,7 +1292,28 @@ class TrackController:
             self._lap1.append(dict(sample))
             self._raw = self._lap1
             self.current_segment = sample["id"]
-            self._emit(self._progress_event(vehicle_id, sample, kept=True))
+            self._emit(
+                self._progress_event(
+                    vehicle_id,
+                    sample,
+                    kept=True,
+                    targetTotal=(n_parts * 2) if n_parts else None,
+                    totalKept=len(self._lap1) + len(self._lap2),
+                )
+            )
+            # Après exactement n bouts → tour 2 (les prochaines mesures)
+            if n_parts and len(self._lap1) >= n_parts:
+                self._laps_done = 1
+                self._lap_len = len(self._lap1)
+                self._emit(
+                    {
+                        "type": "mappingLapClosed",
+                        "vehicleId": vehicle_id,
+                        "lap": 1,
+                        "lapLen": self._lap_len,
+                        "targetTotal": self._lap_len * 2,
+                    }
+                )
             return
 
         race_vid = (self.race_vehicle or "").upper()
@@ -1350,6 +1362,26 @@ class TrackController:
                     "expected": {"left": expected.get("left"), "right": expected.get("right")},
                 }
             )
+
+    def _complete_mapping(self, vehicle_id: str) -> None:
+        """Fin des 2 tours (n×2 mesures) : finalise la map et émet mappingComplete."""
+        self._laps_done = 2
+        self.mapping = False
+        completed_vid = self.mapping_vehicle or vehicle_id
+        self.mapping_vehicle = None
+        self._finalize_map()
+        self._emit(
+            {
+                "type": "mappingComplete",
+                "vehicleId": completed_vid,
+                "map": self.map,
+                "lapsDone": 2,
+                "lapLen": self._lap_len,
+                "totalKept": len(self._lap1) + len(self._lap2),
+                "targetTotal": (self._lap_len * 2) if self._lap_len else None,
+                "comparisons": self._last_comparisons,
+            }
+        )
 
     def _finalize_map(self) -> None:
         """Fusionne tour1+tour2 (moyenne), numérote les bouts, calcule la confiance."""

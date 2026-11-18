@@ -529,13 +529,16 @@
       fill.style.width = "100%";
       return;
     }
+    const n = state.track.partCount || lapLen || 0;
+    const target = n ? n * 2 : 0;
+    const total = lap1 + lap2;
     if ((state.track.lapsDone || 0) >= 1 && lapLen > 0) {
       pct = Math.min(100, Math.round(50 + (50 * lap2) / lapLen));
-      conf = ` · bout ${Math.max(0, lap2 - 1)} · tour2 ${lap2}/${lapLen} (tout gardé)`;
+      conf = ` · tour2 ${lap2}/${lapLen} · ${total}/${lapLen * 2} mesures`;
     } else {
-      const target = state.track.partCount || Math.max(lap1, 8);
-      pct = Math.min(50, Math.round((50 * lap1) / target));
-      conf = ` · bout ${Math.max(0, lap1 - 1)} · ${lap1} mesures`;
+      const t1 = state.track.partCount || Math.max(lap1, 8);
+      pct = Math.min(50, Math.round((50 * lap1) / t1));
+      conf = ` · ${lap1}/${t1} · cible ${target || "?"} mesures`;
     }
     txt.textContent = `Tour ${lap}/${need}${conf}`;
     fill.style.width = `${pct}%`;
@@ -1944,6 +1947,14 @@
         renderTrackMap();
         updateCockpitChrome("A");
         break;
+      case "mappingLapClosed":
+        pushEvent(`Tour 1 OK · ${msg.lapLen} bouts → tour 2`, "notify");
+        toast(`Tour 1 terminé (${msg.lapLen} bouts)`);
+        break;
+      case "mappingCelebrate":
+        toast(`Stop + strobe ${msg.durationSec || 5}s`);
+        logLine("ok", `Mapping fini · strobe ${msg.durationSec || 5}s`);
+        break;
       case "mappingComplete":
         state.track.mapping = false;
         state.track.lapsDone = 2;
@@ -1954,11 +1965,12 @@
         renderTrackMap();
         {
           const c = state.track.comparisons;
+          const total = msg.totalKept || ((msg.lapLen || 0) * 2) || "";
           const confTxt = c
             ? ` · conf ${(c.meanConfidence * 100).toFixed(0)}% (${c.matchedCount}/${c.segmentCount})`
             : "";
-          pushEvent(`Mapping terminé (2 tours)${confTxt}`, "notify");
-          toast(`2 tours OK${confTxt} — Sauver map`);
+          pushEvent(`Mapping terminé · ${total} mesures (2 tours)${confTxt}`, "notify");
+          toast(`2 tours OK${total ? ` · ${total} mesures` : ""}${confTxt} — Sauver map`);
         }
         updateCockpitChrome("A");
         updateCockpitChrome("B");

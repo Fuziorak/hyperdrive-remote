@@ -55,6 +55,8 @@ def _broadcast(event: dict[str, Any]) -> None:
         "mappingStopped",
         "mappingCleared",
         "mappingProgress",
+        "mappingLapClosed",
+        "mappingCelebrate",
         "latencyResult",
         "raceStarted",
         "raceStopped",

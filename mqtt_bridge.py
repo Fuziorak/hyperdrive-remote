@@ -82,6 +82,7 @@ class MqttBridge:
         self._race_brake_timer: threading.Timer | None = None
         self._race_last_cmd_speed: int | None = None
         self._race_light_mode: str | None = None
+        self._map_strobe_timer: threading.Timer | None = None
         self._start_watchdog()
 
     # ----- public API used by app.py -----
@@ -522,6 +523,7 @@ class MqttBridge:
         part_count: int | None = None,
     ) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
+        self._cancel_map_strobe()
         # Tracking d'abord ; set_speed en manual=False pour ne pas couper le mapping.
         out = self.track.start_mapping(vehicle_id, part_count=part_count)
         spd = max(0, min(300, int(cruise_speed)))
@@ -557,6 +559,56 @@ class MqttBridge:
             except Exception:
                 pass
         return out
+
+    def _cancel_map_strobe(self) -> None:
+        timer = self._map_strobe_timer
+        self._map_strobe_timer = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+    def _on_mapping_complete(self, vehicle_id: str) -> None:
+        """Stop net + strobe toutes les lumières pendant 5 s à la fin des 2 tours."""
+        vid = str(vehicle_id or "").strip()
+        if not vid:
+            return
+        try:
+            self._remember(vid, velocity=0, acceleration=2000)
+            self._publish_speed(vid, 0, 2000)
+            if self._hold_enabled.get(vid):
+                self.set_hold(vid, False)
+        except Exception as exc:
+            debug_log.warn("mqtt", "mapping complete stop failed", error=str(exc), vehicleId=vid)
+        try:
+            self.apply_light_preset(vid, "strobe")
+        except Exception as exc:
+            debug_log.warn("mqtt", "mapping strobe failed", error=str(exc), vehicleId=vid)
+        self._cancel_map_strobe()
+
+        def _lights_off() -> None:
+            self._map_strobe_timer = None
+            try:
+                # Ne pas écraser si une course a démarré entre-temps
+                if self.track.race_active and (self.track.race_vehicle or "").upper() == vid.upper():
+                    return
+                self.apply_light_preset(vid, "off")
+            except Exception:
+                pass
+
+        timer = threading.Timer(5.0, _lights_off)
+        timer.daemon = True
+        self._map_strobe_timer = timer
+        timer.start()
+        self._emit(
+            {
+                "type": "mappingCelebrate",
+                "vehicleId": vid,
+                "lights": "strobe",
+                "durationSec": 5,
+            }
+        )
 
     def start_mapped_race(self, vehicle_id: str) -> dict[str, Any]:
         self._subscribe_vehicle(vehicle_id)
@@ -1185,10 +1237,8 @@ class MqttBridge:
                     except Exception:
                         pass
                 elif was_mapping and not self.track.mapping:
-                    try:
-                        self.panic_stop(vid)
-                    except Exception:
-                        pass
+                    # Fin des 2 tours (n×2 mesures) → stop + strobe 5 s
+                    self._on_mapping_complete(vid)
                 elif in_race and self.track.race_active:
                     try:
                         segs = (self.track.map or {}).get("segments") or []
