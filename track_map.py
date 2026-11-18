@@ -349,31 +349,29 @@ def race_speed_for_segment(
     return int(max(0, min(1000, round(speed))))
 
 
-def _upcoming_min_speed(
+def _future_min_speed(
     segments: list[dict[str, Any]],
     index: int,
     slowdown_pct: float,
     *,
     straight_max: int,
     lookahead: int,
-) -> int:
+) -> int | None:
+    """Vitesse mini des N bouts *suivants* (hors bout courant). None si lookahead off."""
     if not segments:
-        return 0
-    n = len(segments)
-    idx = int(index) % n
-    current = race_speed_for_segment(
-        segments[idx], slowdown_pct, straight_max=straight_max
-    )
+        return None
     look = max(0, min(3, int(lookahead)))
     if look <= 0:
-        return current
-    upcoming = current
+        return None
+    n = len(segments)
+    idx = int(index) % n
+    upcoming: int | None = None
     for k in range(1, look + 1):
         sp = race_speed_for_segment(
             segments[(idx + k) % n], slowdown_pct, straight_max=straight_max
         )
-        upcoming = min(upcoming, sp)
-    return int(upcoming)
+        upcoming = sp if upcoming is None else min(upcoming, sp)
+    return upcoming
 
 
 def estimate_travel_ms(length: float, speed: int, measured_ms: float | None = None) -> float:
@@ -394,10 +392,14 @@ def race_speed_plan(
     brake_at_fraction: float = _DEFAULT_BRAKE_AT,
     measured_ms: float | None = None,
 ) -> dict[str, Any]:
-    """Plan de vitesse pour un bout : plein gaz puis frein à 2/3 ou 3/4 du droit.
+    """Plan de vitesse selon le type de bout.
 
-    Les traits MQTT ne donnent pas la position continue : on estime le temps de
-    parcours (mesuré si possible) et on programme le freinage à la fraction.
+    Droit :
+      - accélère en entrée (vitesse max droite)
+      - si un virage arrive dans le lookahead → freine à 2/3 ou 3/4 du droit
+    Virage :
+      - maintient la vitesse de croisière virage tout le bout
+      - n'accélère jamais ici ; l'accélération n'a lieu qu'en entrant sur un droit
     """
     if not segments:
         return {
@@ -417,21 +419,31 @@ def race_speed_plan(
     tight = turn_tightness(left, right)
     is_straight = turn == "straight" and tight < 0.12
     length = segment_length(left, right)
-    entry = race_speed_for_segment(seg, slowdown_pct, straight_max=straight_max)
-    upcoming = _upcoming_min_speed(
+    cruise = race_speed_for_segment(seg, slowdown_pct, straight_max=straight_max)
+    future = _future_min_speed(
         segments,
         idx,
         slowdown_pct,
         straight_max=straight_max,
         lookahead=lookahead,
     )
-    brake_to = min(entry, upcoming)
     frac = max(0.0, min(0.95, float(brake_at_fraction)))
-    brake_after: int | None = None
-    if is_straight and frac > 0 and brake_to < entry:
-        total_ms = estimate_travel_ms(length, entry, measured_ms)
-        # Laisse une marge avant la fin du bout (réaction / imprécision)
-        brake_after = int(max(80, min(total_ms * 0.92, total_ms * frac)))
+
+    if is_straight:
+        # Début de droit = plein gaz ; frein anticipé seulement si la suite est plus lente
+        entry = int(cruise)
+        brake_to = entry
+        brake_after: int | None = None
+        if future is not None and future < entry and frac > 0:
+            brake_to = int(future)
+            total_ms = estimate_travel_ms(length, entry, measured_ms)
+            brake_after = int(max(80, min(total_ms * 0.92, total_ms * frac)))
+    else:
+        # Virage = croisière constante ; pas de frein mi-parcours ni d'accélération
+        entry = int(cruise)
+        brake_to = entry
+        brake_after = None
+
     return {
         "segmentIndex": idx,
         "entrySpeed": int(entry),
@@ -441,6 +453,7 @@ def race_speed_plan(
         "isStraight": is_straight,
         "estimatedTravelMs": int(estimate_travel_ms(length, entry, measured_ms)),
         "brakeAtFraction": frac,
+        "futureMinSpeed": future,
     }
 
 

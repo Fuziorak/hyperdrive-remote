@@ -392,7 +392,7 @@ class MqttBridge:
             self._set_race_lights(vehicle_id, "tailflash")
 
     def _apply_race_plan(self, vehicle_id: str, plan: dict[str, Any] | None) -> None:
-        """Plein gaz en entrée de bout, puis frein programmé à 2/3 ou 3/4 du droit."""
+        """Droit: accélère en entrée puis frein anticipé. Virage: croisière fixe."""
         self._cancel_race_brake()
         if not plan:
             return
@@ -400,9 +400,13 @@ class MqttBridge:
         brake = int(plan.get("brakeSpeed") or entry)
         delay_ms = plan.get("brakeAfterMs")
         seg_idx = int(plan.get("segmentIndex", -1))
-        self.set_speed(vehicle_id, entry, 1400, manual=False)
+        is_straight = bool(plan.get("isStraight"))
+        # Accel un peu plus franche en entrée de droit ; virage = maintien
+        accel = 1600 if is_straight else 1000
+        self.set_speed(vehicle_id, entry, accel, manual=False)
         self._race_lights_for_speed_change(vehicle_id, entry)
-        if not delay_ms or brake >= entry:
+        # Frein mi-parcours uniquement sur les droits (jamais accélérer dans un virage)
+        if not is_straight or not delay_ms or brake >= entry:
             return
 
         def _fire() -> None:
