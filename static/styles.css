@@ -335,9 +335,18 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--teal) 50
 /* ——— Race view ——— */
 .race-layout {
   display: grid;
-  grid-template-columns: 1.1fr 0.9fr 0.85fr;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(260px, 0.75fr) minmax(340px, 1.3fr);
   gap: 0.85rem;
+  align-items: start;
 }
+.race-map-host { margin-bottom: 0.6rem; }
+.race-map-host .map-dock { position: static; min-height: 0; }
+/* Dans l'onglet Course : pas d'outils de mapping, juste la carte + clic = départ */
+.map-dock.in-race .map-mapping-setup,
+.map-dock.in-race .map-actions,
+.map-dock.in-race #mappingProgressBox { display: none; }
+.map-dock.in-race .map-canvas-wrap { min-height: 380px; }
+.map-dock.in-race .map-seg { cursor: pointer; }
 .race-timer-block {
   background: var(--bg-2); border-radius: var(--radius-sm); padding: 0.7rem 0.8rem;
   border-left: 3px solid var(--amber); margin-bottom: 0.5rem;

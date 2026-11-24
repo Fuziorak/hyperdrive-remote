@@ -114,6 +114,19 @@
       panel.classList.toggle("is-active", on);
       panel.hidden = !on;
     });
+    // Le circuit suit l'onglet : Course → dans la colonne Course ; sinon → Pilotage.
+    const dock = $("mapPanel");
+    const host = $("raceMapHost");
+    const pilot = $("viewPilot");
+    if (dock && host && pilot) {
+      if (name === "race") {
+        if (dock.parentElement !== host) host.appendChild(dock);
+        dock.classList.add("in-race");
+      } else {
+        if (dock.parentElement !== pilot) pilot.appendChild(dock);
+        dock.classList.remove("in-race");
+      }
+    }
     if (name === "pilot" || name === "race") renderTrackMap();
   }
 
@@ -770,6 +783,8 @@
         }
         if ($("mapSegIndex")) $("mapSegIndex").value = String(seg.id);
         if ($("mapSegSpeed")) $("mapSegSpeed").value = String(seg.maxSpeed ?? 700);
+        // Un clic = départ direct, sans confirmation
+        setStartSegment(Number(seg.id));
       });
       g.appendChild(line);
 
@@ -800,6 +815,26 @@
 
     const idx = Number($("mapSegIndex").value) || 0;
     if (segs[idx]) $("mapSegSpeed").value = String(segs[idx].maxSpeed ?? 700);
+  }
+
+  /** Clic sur un segment : devient le départ tout de suite (pas de confirmation). */
+  async function setStartSegment(idx) {
+    if (Number.isNaN(idx)) return;
+    if (state.track.mapping || !state.track.map?.segments?.length) return; // rien à définir pendant le mapping
+    if (state.track.raceActive) {
+      toast("Course en cours — arrête-la pour changer le départ");
+      return;
+    }
+    try {
+      const data = await api("/api/track/start-segment", {
+        method: "POST",
+        body: JSON.stringify({ index: idx }),
+      });
+      applyTrackSnapshot(data.track);
+      toast(`Départ = segment ${idx}`);
+    } catch (err) {
+      toast(err.message);
+    }
   }
 
   // ---------------- fleet / slots ----------------
@@ -2819,20 +2854,9 @@
   $("btnSegPopClose")?.addEventListener("click", () => {
     if ($("segPopover")) $("segPopover").hidden = true;
   });
-  $("btnSegSetStart")?.addEventListener("click", async () => {
+  $("btnSegSetStart")?.addEventListener("click", () => {
     const idx = Number($("segPopover")?.dataset.segId);
-    if (Number.isNaN(idx)) return;
-    try {
-      const data = await api("/api/track/start-segment", {
-        method: "POST",
-        body: JSON.stringify({ index: idx }),
-      });
-      applyTrackSnapshot(data.track);
-      toast(`Départ = segment ${idx}`);
-      if ($("segPopover")) $("segPopover").hidden = true;
-    } catch (err) {
-      toast(err.message);
-    }
+    if (!Number.isNaN(idx)) setStartSegment(idx);
   });
 
   async function boot() {

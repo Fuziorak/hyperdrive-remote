@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261124a" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261124c" />
 </head>
 <body class="theme-dark">
   <div class="app-bg" aria-hidden="true"></div>
@@ -284,7 +284,7 @@
           <strong id="segPopTitle">Segment</strong>
           <p id="segPopBody"></p>
           <div class="btn-row tight">
-            <button type="button" class="btn primary tiny" id="btnSegSetStart">Départ ici</button>
+            <button type="button" class="btn primary tiny" id="btnSegSetStart" hidden>Départ ici</button>
             <button type="button" class="btn ghost tiny" id="btnSegPopClose">Fermer</button>
           </div>
         </div>
@@ -400,7 +400,8 @@
         </div>
 
         <div class="panel race-map-slot" id="raceMapSlot">
-          <p class="hint">La carte du circuit reste visible dans Pilotage. Utilisez l’onglet Pilotage pour le tracé plein écran.</p>
+          <div id="raceMapHost" class="race-map-host"></div>
+          <p class="hint">Clique un segment du circuit : il devient le départ de la course.</p>
           <div id="selectedHero" class="focus-strip compact">
             <div>
               <p class="focus-label">Focus</p>
@@ -502,6 +503,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20261124b"></script>
+  <script src="/static/app.js?v=20261124c"></script>
 </body>
 </html>
