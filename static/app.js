@@ -100,6 +100,8 @@
       lookaheadSegments: 1,
       brakeAtFraction: 0.75,
       brakeStrengthPct: 100,
+      turnSpeed: 300,
+      preturnSpeed: 300,
       raceProfile: [],
     },
   };
@@ -302,17 +304,25 @@
     });
   }
 
-  function syncTurnSlowdownUI(pct, { force = false } = {}) {
-    const el = $("turnSlowdownSlider");
+  /** Slider de vitesse absolue 0–1000 (virages / bout droit avant virage). */
+  function syncSpeedSlider(sliderId, valueId, stateKey, speed, { force = false } = {}) {
+    const el = $(sliderId);
     if (!force && isUserEditing(el)) {
-      state.track.turnSlowdownPct = Math.max(0, Math.min(100, Number(el.value) || 0));
+      state.track[stateKey] = Math.max(0, Math.min(1000, Number(el.value) || 0));
       return;
     }
-    const v = Math.max(0, Math.min(100, Number(pct) || 0));
-    state.track.turnSlowdownPct = v;
+    const v = Math.max(0, Math.min(1000, Number(speed) || 0));
+    state.track[stateKey] = v;
     setFieldValue(el, v, { force });
-    if ($("turnSlowdownValue")) $("turnSlowdownValue").textContent = String(v);
-    if ($("turnSlowdownSpeedHint")) $("turnSlowdownSpeedHint").textContent = String(curveSpeedHint(v));
+    if ($(valueId)) $(valueId).textContent = String(v);
+  }
+
+  function syncTurnSpeedUI(speed, opts) {
+    syncSpeedSlider("turnSpeedSlider", "turnSpeedValue", "turnSpeed", speed, opts);
+  }
+
+  function syncPreturnSpeedUI(speed, opts) {
+    syncSpeedSlider("preturnSpeedSlider", "preturnSpeedValue", "preturnSpeed", speed, opts);
   }
 
   function syncStraightMaxUI(speed, { force = false } = {}) {
@@ -325,26 +335,6 @@
     state.track.straightMaxSpeed = v;
     setFieldValue(el, v, { force });
     if ($("straightMaxValue")) $("straightMaxValue").textContent = String(v);
-  }
-
-  function updateBrakeHint() {
-    const prof = state.track.raceProfile || [];
-    const pre = prof.find((p) => p.kind === "preturn");
-    const el = $("brakeStrengthSpeedHint");
-    if (el) el.textContent = pre ? String(pre.speed) : "—";
-  }
-
-  function syncBrakeStrengthUI(pct, { force = false } = {}) {
-    const el = $("brakeStrengthSlider");
-    if (!force && isUserEditing(el)) {
-      state.track.brakeStrengthPct = Math.max(0, Math.min(150, Number(el.value) || 0));
-      return;
-    }
-    const v = Math.max(0, Math.min(150, Number(pct) || 0));
-    state.track.brakeStrengthPct = v;
-    setFieldValue(el, v, { force });
-    if ($("brakeStrengthValue")) $("brakeStrengthValue").textContent = String(v);
-    updateBrakeHint();
   }
 
   function syncLookaheadUI(segments, brakeAtFraction, { force = false } = {}) {
@@ -523,7 +513,9 @@
     if (state.track.curveGain != null) {
       setFieldValue("mapCurveGain", state.track.curveGain);
     }
-    if (track.turnSlowdownPct != null) syncTurnSlowdownUI(track.turnSlowdownPct);
+    if (track.turnSpeed != null) syncTurnSpeedUI(track.turnSpeed);
+    if (track.preturnSpeed != null) syncPreturnSpeedUI(track.preturnSpeed);
+    if (track.turnSlowdownPct != null) state.track.turnSlowdownPct = track.turnSlowdownPct;
     if (track.straightMaxSpeed != null) syncStraightMaxUI(track.straightMaxSpeed);
     if (track.lookaheadSegments != null || track.brakeAtFraction != null) {
       syncLookaheadUI(
@@ -532,8 +524,7 @@
       );
     }
     if (track.raceProfile) state.track.raceProfile = track.raceProfile;
-    if (track.brakeStrengthPct != null) syncBrakeStrengthUI(track.brakeStrengthPct);
-    else updateBrakeHint();
+    if (track.brakeStrengthPct != null) state.track.brakeStrengthPct = track.brakeStrengthPct;
     if ($("raceActiveMapName")) {
       $("raceActiveMapName").textContent = state.track.courseName || (state.track.map ? "map chargée" : "—");
     }
@@ -2141,14 +2132,19 @@
         break;
       }
       case "turnSlowdownSet":
-        syncTurnSlowdownUI(msg.turnSlowdownPct ?? state.track.turnSlowdownPct);
+        state.track.turnSlowdownPct = msg.turnSlowdownPct ?? state.track.turnSlowdownPct;
         break;
       case "straightMaxSet":
         syncStraightMaxUI(msg.straightMaxSpeed ?? state.track.straightMaxSpeed);
         break;
       case "brakeStrengthSet":
         if (msg.raceProfile) state.track.raceProfile = msg.raceProfile;
-        syncBrakeStrengthUI(msg.brakeStrengthPct ?? state.track.brakeStrengthPct);
+        state.track.brakeStrengthPct = msg.brakeStrengthPct ?? state.track.brakeStrengthPct;
+        break;
+      case "raceSpeedsSet":
+        if (msg.raceProfile) state.track.raceProfile = msg.raceProfile;
+        if (msg.turnSpeed != null) syncTurnSpeedUI(msg.turnSpeed);
+        if (msg.preturnSpeed != null) syncPreturnSpeedUI(msg.preturnSpeed);
         break;
       case "lookaheadSet":
         syncLookaheadUI(
@@ -2421,11 +2417,11 @@
     "mapSegIndex",
     "mapSegSpeed",
     "courseNameInput",
-    "turnSlowdownSlider",
+    "turnSpeedSlider",
+    "preturnSpeedSlider",
     "straightMaxSlider",
     "lookaheadSlider",
     "brakeFractionSelect",
-    "brakeStrengthSlider",
     "holdHzSlider",
     "brokerHost",
     "brokerPort",
@@ -2518,27 +2514,33 @@
     }
   });
 
-  let _slowdownTimer = null;
-  $("turnSlowdownSlider").addEventListener("input", () => {
-    const pct = Number($("turnSlowdownSlider").value) || 0;
-    markFieldDirty("turnSlowdownSlider");
-    state.track.turnSlowdownPct = pct;
-    if ($("turnSlowdownValue")) $("turnSlowdownValue").textContent = String(pct);
-    if ($("turnSlowdownSpeedHint")) $("turnSlowdownSpeedHint").textContent = String(curveSpeedHint(pct));
-    clearTimeout(_slowdownTimer);
-    _slowdownTimer = setTimeout(async () => {
-      try {
-        const data = await api("/api/track/turn-slowdown", {
-          method: "POST",
-          body: JSON.stringify({ pct }),
-        });
-        clearFieldDirty("turnSlowdownSlider");
-        applyTrackSnapshot(data.track);
-      } catch (err) {
-        toast(err.message);
-      }
-    }, 180);
-  });
+  /** Slider de vitesse absolue : met à jour l'affichage tout de suite, envoie au serveur après 180 ms. */
+  function wireSpeedSlider(sliderId, valueId, stateKey, endpoint) {
+    const el = $(sliderId);
+    if (!el) return;
+    let timer = null;
+    el.addEventListener("input", () => {
+      const speed = Math.max(0, Math.min(1000, Number(el.value) || 0));
+      markFieldDirty(sliderId);
+      state.track[stateKey] = speed;
+      if ($(valueId)) $(valueId).textContent = String(speed);
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        try {
+          const data = await api(endpoint, {
+            method: "POST",
+            body: JSON.stringify({ speed }),
+          });
+          clearFieldDirty(sliderId);
+          applyTrackSnapshot(data.track);
+        } catch (err) {
+          toast(err.message);
+        }
+      }, 180);
+    });
+  }
+  wireSpeedSlider("turnSpeedSlider", "turnSpeedValue", "turnSpeed", "/api/track/turn-speed");
+  wireSpeedSlider("preturnSpeedSlider", "preturnSpeedValue", "preturnSpeed", "/api/track/preturn-speed");
 
   let _straightTimer = null;
   $("straightMaxSlider").addEventListener("input", () => {
@@ -2586,26 +2588,6 @@
       }
     }, 180);
   }
-  let _brakeStrengthTimer = null;
-  $("brakeStrengthSlider")?.addEventListener("input", () => {
-    const pct = Number($("brakeStrengthSlider").value) || 0;
-    markFieldDirty("brakeStrengthSlider");
-    state.track.brakeStrengthPct = pct;
-    if ($("brakeStrengthValue")) $("brakeStrengthValue").textContent = String(pct);
-    clearTimeout(_brakeStrengthTimer);
-    _brakeStrengthTimer = setTimeout(async () => {
-      try {
-        const data = await api("/api/track/brake-strength", {
-          method: "POST",
-          body: JSON.stringify({ pct }),
-        });
-        clearFieldDirty("brakeStrengthSlider");
-        applyTrackSnapshot(data.track);
-      } catch (err) {
-        toast(err.message);
-      }
-    }, 180);
-  });
 
   $("lookaheadSlider").addEventListener("input", pushLookahead);
   $("brakeFractionSelect").addEventListener("change", pushLookahead);
@@ -2617,26 +2599,26 @@
         $("btnRacePickMap").click();
         return;
       }
-      const pct = Number($("turnSlowdownSlider").value) || 0;
       const straight = Number($("straightMaxSlider").value) || 0;
+      const turnSpeed = Number($("turnSpeedSlider").value) || 0;
+      const preturnSpeed = Number($("preturnSpeedSlider").value) || 0;
       const look = Number($("lookaheadSlider").value) || 0;
       const brakeAtFraction = Number($("brakeFractionSelect").value) || 0;
-      await api("/api/track/turn-slowdown", {
-        method: "POST",
-        body: JSON.stringify({ pct }),
-      });
       await api("/api/track/straight-max", {
         method: "POST",
         body: JSON.stringify({ speed: straight }),
       });
+      await api("/api/track/turn-speed", {
+        method: "POST",
+        body: JSON.stringify({ speed: turnSpeed }),
+      });
+      await api("/api/track/preturn-speed", {
+        method: "POST",
+        body: JSON.stringify({ speed: preturnSpeed }),
+      });
       await api("/api/track/lookahead", {
         method: "POST",
         body: JSON.stringify({ segments: look, brakeAtFraction }),
-      });
-      const brakeStrength = Number($("brakeStrengthSlider")?.value ?? 100);
-      await api("/api/track/brake-strength", {
-        method: "POST",
-        body: JSON.stringify({ pct: brakeStrength }),
       });
       const id = requireSlot("A");
       const data = await api("/api/track/race/start", {
@@ -2646,7 +2628,7 @@
       applyTrackSnapshot(data.track);
       $("raceMapPicker").hidden = true;
       toast(
-        `Course · droits ${straight} · frein ${brakeStrength}% · virages ~${curveSpeedHint(pct)}`
+        `Course · droits ${straight} · avant virage ${preturnSpeed} · virages ${turnSpeed}`
       );
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);

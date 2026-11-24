@@ -390,13 +390,16 @@ def build_race_profile(
     straight_max: int = _STRAIGHT_MAX_SPEED,
     lookahead: int = _DEFAULT_LOOKAHEAD,
     brake_strength_pct: float = _DEFAULT_BRAKE_STRENGTH,
+    turn_speed: int | None = None,
+    preturn_speed_abs: int | None = None,
 ) -> list[dict[str, Any]]:
     """Profil de vitesse complet, calculé UNE fois avant le départ.
 
     - Droits : vitesse max.
-    - Droit(s) juste avant un virage (jusqu'à `lookahead` bouts) : vitesse du virage
-      ajustée par le curseur de freinage → le robot ralentit dès l'entrée du bout.
-    - Virages : une vitesse fixe par virage (moyenne de ses bouts), pas d'accélération.
+    - Droit(s) juste avant un virage (jusqu'à `lookahead` bouts) : vitesse choisie
+      (`preturn_speed_abs`, 0–1000) ou, à défaut, déduite du curseur de freinage %.
+    - Virages : vitesse fixe choisie (`turn_speed`, 0–1000) ou, à défaut, moyenne
+      des bouts d'un virage. Pas d'accélération dans un virage.
     La piste est une boucle : le dernier bout précède le premier.
     """
     n = len(segments)
@@ -443,11 +446,14 @@ def build_race_profile(
 
     run_speed: dict[int, int] = {}
     for rid, run in enumerate(runs):
-        per_bout = [
-            race_speed_for_segment(segments[k], slowdown_pct, straight_max=top)
-            for k in run
-        ]
-        v = int(round(sum(per_bout) / max(1, len(per_bout))))
+        if turn_speed is not None:
+            v = int(max(0, min(1000, int(turn_speed))))
+        else:
+            per_bout = [
+                race_speed_for_segment(segments[k], slowdown_pct, straight_max=top)
+                for k in run
+            ]
+            v = int(round(sum(per_bout) / max(1, len(per_bout))))
         run_speed[rid] = v
         for k in run:
             speeds[k] = v
@@ -459,7 +465,10 @@ def build_race_profile(
         for rid, run in enumerate(runs):
             first = run[0]
             tv = run_speed[rid]
-            pre = preturn_speed(top, tv, brake_strength_pct)
+            if preturn_speed_abs is not None:
+                pre = int(max(0, min(1000, int(preturn_speed_abs))))
+            else:
+                pre = preturn_speed(top, tv, brake_strength_pct)
             for step in range(1, look + 1):
                 k = (first - step) % n
                 if dirs[k] is not None:
@@ -493,6 +502,8 @@ def race_speed_plan(
     measured_ms: float | None = None,
     brake_strength_pct: float = _DEFAULT_BRAKE_STRENGTH,
     profile: list[dict[str, Any]] | None = None,
+    turn_speed: int | None = None,
+    preturn_speed_abs: int | None = None,
 ) -> dict[str, Any]:
     """Plan de vitesse d'un bout = simple lecture du profil précalculé.
 
@@ -518,6 +529,8 @@ def race_speed_plan(
             straight_max=straight_max,
             lookahead=lookahead,
             brake_strength_pct=brake_strength_pct,
+            turn_speed=turn_speed,
+            preturn_speed_abs=preturn_speed_abs,
         )
     entry_info = profile[idx]
     entry = int(entry_info["speed"])
@@ -654,7 +667,10 @@ class TrackController:
         self.straight_max_speed: int = _STRAIGHT_MAX_SPEED
         self.lookahead_segments: int = _DEFAULT_LOOKAHEAD  # 0=off, 1–3 bouts d’avance
         self.brake_at_fraction: float = _DEFAULT_BRAKE_AT  # 0=off, ~0.67=2/3, ~0.75=3/4
-        self.brake_strength_pct: float = _DEFAULT_BRAKE_STRENGTH  # 0–150 %, 100 = vitesse du virage
+        self.brake_strength_pct: float = _DEFAULT_BRAKE_STRENGTH  # ancien réglage (compat)
+        # Vitesses absolues 0–1000 choisies par l'utilisateur
+        self.turn_speed: int = int(round(_CURVE_SPEED_AT_0 * (1.0 - self.turn_slowdown_pct / 100.0)))
+        self.preturn_speed: int = self.turn_speed  # droit juste avant virage
         self._profile_cache: tuple[Any, list[dict[str, Any]]] | None = None
         self._seg_entered_at: float | None = None
         self._seg_travel_ms: dict[int, float] = {}
@@ -723,6 +739,8 @@ class TrackController:
             "lookaheadSegments": self.lookahead_segments,
             "brakeAtFraction": self.brake_at_fraction,
             "brakeStrengthPct": self.brake_strength_pct,
+            "turnSpeed": self.turn_speed,
+            "preturnSpeed": self.preturn_speed,
             "raceProfile": self.race_profile(),
             "raceMatchRatio": _RACE_MATCH_RATIO,
         }
@@ -1113,9 +1131,35 @@ class TrackController:
         return {"ok": True, "curveGain": self.curve_gain}
 
     def set_turn_slowdown(self, pct: float) -> dict[str, Any]:
+        """Ancien réglage en % (compat) : convertit en vitesse absolue des virages."""
         self.turn_slowdown_pct = max(0.0, min(100.0, float(pct)))
+        self.turn_speed = int(round(_CURVE_SPEED_AT_0 * (1.0 - self.turn_slowdown_pct / 100.0)))
         self._emit({"type": "turnSlowdownSet", "turnSlowdownPct": self.turn_slowdown_pct})
-        return {"ok": True, "turnSlowdownPct": self.turn_slowdown_pct}
+        self._emit_speeds()
+        return {"ok": True, "turnSlowdownPct": self.turn_slowdown_pct, "turnSpeed": self.turn_speed}
+
+    def _emit_speeds(self) -> None:
+        self._emit(
+            {
+                "type": "raceSpeedsSet",
+                "straightMaxSpeed": self.straight_max_speed,
+                "turnSpeed": self.turn_speed,
+                "preturnSpeed": self.preturn_speed,
+                "raceProfile": self.race_profile(),
+            }
+        )
+
+    def set_turn_speed(self, speed: int) -> dict[str, Any]:
+        """Vitesse dans les virages, 0–1000."""
+        self.turn_speed = max(0, min(1000, int(speed)))
+        self._emit_speeds()
+        return {"ok": True, "turnSpeed": self.turn_speed}
+
+    def set_preturn_speed(self, speed: int) -> dict[str, Any]:
+        """Vitesse du bout droit juste avant un virage, 0–1000."""
+        self.preturn_speed = max(0, min(1000, int(speed)))
+        self._emit_speeds()
+        return {"ok": True, "preturnSpeed": self.preturn_speed}
 
     def set_straight_max_speed(self, speed: int) -> dict[str, Any]:
         self.straight_max_speed = max(0, min(1000, int(speed)))
@@ -1151,6 +1195,10 @@ class TrackController:
     def set_brake_strength(self, pct: float) -> dict[str, Any]:
         """Curseur de freinage avant virage (0–150 %, 100 = vitesse du virage)."""
         self.brake_strength_pct = max(0.0, min(150.0, float(pct)))
+        # Compat : convertit le % en vitesse absolue du bout avant virage
+        self.preturn_speed = preturn_speed(
+            self.straight_max_speed, self.turn_speed, self.brake_strength_pct
+        )
         self._emit(
             {
                 "type": "brakeStrengthSet",
@@ -1158,7 +1206,12 @@ class TrackController:
                 "raceProfile": self.race_profile(),
             }
         )
-        return {"ok": True, "brakeStrengthPct": self.brake_strength_pct}
+        self._emit_speeds()
+        return {
+            "ok": True,
+            "brakeStrengthPct": self.brake_strength_pct,
+            "preturnSpeed": self.preturn_speed,
+        }
 
     def race_profile(self) -> list[dict[str, Any]]:
         """Profil de vitesse précalculé (recalculé seulement si map/réglages changent)."""
@@ -1168,10 +1221,10 @@ class TrackController:
         key = (
             id(self.map),
             len(segs),
-            self.turn_slowdown_pct,
+            self.turn_speed,
+            self.preturn_speed,
             self.straight_max_speed,
             self.lookahead_segments,
-            self.brake_strength_pct,
         )
         cached = self._profile_cache
         if cached is not None and cached[0] == key:
@@ -1182,6 +1235,8 @@ class TrackController:
             straight_max=self.straight_max_speed,
             lookahead=self.lookahead_segments,
             brake_strength_pct=self.brake_strength_pct,
+            turn_speed=self.turn_speed,
+            preturn_speed_abs=self.preturn_speed,
         )
         self._profile_cache = (key, profile)
         return profile
@@ -1209,6 +1264,8 @@ class TrackController:
             measured_ms=measured,
             brake_strength_pct=self.brake_strength_pct,
             profile=self.race_profile(),
+            turn_speed=self.turn_speed,
+            preturn_speed_abs=self.preturn_speed,
         )
 
     def target_speed_for_segment(self, index: int) -> int:

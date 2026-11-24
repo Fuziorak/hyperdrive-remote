@@ -56,6 +56,7 @@ def _broadcast(event: dict[str, Any]) -> None:
         "mappingCleared",
         "mappingProgress",
         "brakeStrengthSet",
+        "raceSpeedsSet",
         "mappingLapClosed",
         "mappingCelebrate",
         "latencyResult",
@@ -495,6 +496,28 @@ def api_track_lookahead():
             int(data.get("segments", data.get("lookaheadSegments", 1))),
             brake_at_fraction=float(frac) if frac is not None else None,
         )
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/turn-speed")
+def api_track_turn_speed():
+    """Vitesse dans les virages, 0–1000."""
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_turn_speed(int(data.get("speed", data.get("turnSpeed", 300))))
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/preturn-speed")
+def api_track_preturn_speed():
+    """Vitesse du bout droit juste avant un virage, 0–1000."""
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_preturn_speed(int(data.get("speed", data.get("preturnSpeed", 300))))
         return jsonify({**out, "track": orch.track.snapshot()})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
