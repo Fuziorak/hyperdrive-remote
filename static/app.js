@@ -2109,6 +2109,20 @@
         );
         renderTrackMap();
         break;
+      case "raceResync":
+        state.track.currentSegment = msg.toSegment ?? state.track.currentSegment;
+        if ($("raceSegHint")) $("raceSegHint").textContent = String(state.track.currentSegment);
+        toast(`Position recalée : bout ${msg.fromSegment} → ${msg.toSegment}`);
+        pushEvent(`Position recalée (bout ${msg.fromSegment} → ${msg.toSegment})`, "notify");
+        logLine("ok", `Recalage ${msg.fromSegment}→${msg.toSegment} (décalage ${msg.shift}, coût ${msg.costBefore}→${msg.cost})`);
+        renderTrackMap();
+        break;
+      case "raceSkippedTrait":
+        logLine("ok", `Trait perdu détecté : bout ${msg.fromSegment} → ${msg.toSegment} (+${msg.advance})`);
+        break;
+      case "racePartialTrait":
+        logLine("in", `Trait parasite cumulé (bout ${msg.currentSegment}) : ${msg.accumulated.left}/${msg.accumulated.right}`);
+        break;
       case "partCountSet":
         state.track.partCount = msg.partCount;
         if (setFieldValue("mapPartCount", msg.partCount) && $("mapPartCountHint")) {

@@ -263,6 +263,141 @@ def sample_confidence(a: dict[str, Any], b: dict[str, Any], ratio: float = _MATC
     return round((side(a["left"], b["left"]) + side(a["right"], b["right"])) / 2.0, 3)
 
 
+# ——— Localisation en course : auto-correction de la position sur la carte ———
+# Les traits (wheelDistance) se répètent presque à l'identique d'un tour à l'autre
+# (±1–2 unités) : la suite des L/R mesurés (longueur + rotation des roues) sert
+# d'empreinte pour savoir où se trouve réellement la voiture.
+_LOC_FLOOR = 6.0     # plancher d'erreur relative (évite de diviser par ~0)
+_LOC_OK = 0.40       # coût L+R en dessous duquel un bout « colle » à la mesure
+_LOC_BAD = 0.40      # coût moyen au-dessus duquel la position actuelle est suspecte
+_LOC_GOOD = 0.35     # coût moyen max pour accepter une position candidate
+_LOC_MARGIN = 0.25   # écart exigé avec la 2e meilleure position (évite les ambiguïtés)
+_LOC_WINDOW = 3      # nombre de traits récents comparés à la carte
+_LOC_GATE = False        # n'explique un écart par un trait perdu/parasite que si on est bien calé
+_LOC_LOCAL_PENALTY = 0.45  # coût ajouté à un trait expliqué par une perte/un parasite
+_LOC_SKIP_PENALTY = 0.08  # malus par bout « sauté » dans un découpage de fenêtre
+_LOC_MAX_PARTIAL = 2  # traits « trop courts » successifs acceptés avant d'abandonner
+
+
+def lr_cost(l: float, r: float, el: float, er: float) -> float:
+    """Erreur relative L+R (0 = identique, ~2 = totalement différent)."""
+
+    def side(a: float, b: float) -> float:
+        a, b = abs(float(a)), abs(float(b))
+        return abs(a - b) / max(a, b, _LOC_FLOOR)
+
+    return side(l, el) + side(r, er)
+
+
+def span_lr(segs: list[dict[str, Any]], start: int, k: int) -> tuple[float, float]:
+    """Somme L/R de k bouts consécutifs à partir de `start` (boucle fermée)."""
+    n = len(segs)
+    left = right = 0.0
+    for j in range(max(1, int(k))):
+        s = segs[(int(start) + j) % n]
+        left += float(s.get("left", 0))
+        right += float(s.get("right", 0))
+    return left, right
+
+
+def choose_advance(
+    segs: list[dict[str, Any]],
+    f: int,
+    tl: float,
+    tr: float,
+    allow_local: bool = True,
+) -> tuple[int, float]:
+    """Combien de bouts cette mesure couvre-t-elle à partir du bout attendu `f` ?
+
+    1 = normal. 2 ou 3 = un/deux traits ont été perdus (la mesure couvre plusieurs bouts).
+    `allow_local=False` quand on n'est pas sûr d'être bien positionné : on n'explique
+    pas l'écart par un trait perdu (ce serait souvent une coïncidence), on laisse la
+    re-localisation par fenêtre trancher.
+    """
+    n = len(segs)
+    max_k = max(1, min(3, n - 1))
+    c1 = lr_cost(tl, tr, *span_lr(segs, f, 1))
+    if c1 <= _LOC_OK or not allow_local:
+        return 1, c1
+    best_k, best_c = 1, c1
+    for k in range(2, max_k + 1):
+        ck = lr_cost(tl, tr, *span_lr(segs, f, k))
+        if ck <= _LOC_OK and ck < c1 - 0.15 and ck < best_c:
+            best_k, best_c = k, ck
+    return best_k, best_c
+
+
+def window_shift(
+    segs: list[dict[str, Any]],
+    hist: list[dict[str, Any]],
+    tracked_next: int | None = None,
+) -> dict[str, Any] | None:
+    """Cherche un décalage d tel que les derniers traits collent mieux à la carte.
+
+    Retourne None si la position actuelle est correcte, ambiguë (piste symétrique)
+    ou si rien de clairement meilleur n'existe. d > 0 = la voiture est en avance
+    sur la position suivie.
+    """
+    n = len(segs)
+    if n < 4 or not hist:
+        return None
+    w = min(len(hist), _LOC_WINDOW)
+    entries = hist[-w:]
+    if w == 1:
+        e = entries[0]
+        hi = max(abs(e["l"]), abs(e["r"]), _LOC_FLOOR)
+        if abs(e["l"] - e["r"]) / hi < 0.15:
+            return None  # un seul trait droit ne suffit pas à se repérer
+    # Position suivie actuellement : coûts réellement retenus au moment de l'avance
+    cost0 = sum(float(e.get("cost", 0.0)) for e in entries) / w
+    if cost0 <= _LOC_BAD:
+        return None
+    # Pour chaque position de départ candidate, meilleur découpage de la fenêtre :
+    # un trait peut couvrir 1, 2 ou 3 bouts (traits perdus), léger malus par bout sauté.
+    max_k = max(1, min(3, n - 1))
+    costs: list[float] = [9.0] * n
+    ends: list[int] = [0] * n
+    for d in range(n):
+        p0 = (entries[0]["start"] + d) % n
+        layer: dict[int, float] = {p0: 0.0}  # position -> coût cumulé
+        for e in entries:
+            nxt: dict[int, float] = {}
+            for pos, acc in layer.items():
+                for k in range(1, max_k + 1):
+                    c = (
+                        acc
+                        + lr_cost(e["l"], e["r"], *span_lr(segs, pos, k))
+                        + _LOC_SKIP_PENALTY * (k - 1)
+                    )
+                    q = (pos + k) % n
+                    if q not in nxt or c < nxt[q]:
+                        nxt[q] = c
+            layer = nxt
+        q_best = min(layer, key=lambda q: layer[q])
+        costs[d] = layer[q_best] / w
+        ends[d] = q_best
+    order = sorted(range(n), key=lambda i: costs[i])
+    best = order[0]
+    best_c = costs[best]
+    if best_c > _LOC_GOOD:
+        return None
+    second_c = costs[order[1]] if len(order) > 1 else 9.0
+    if best != 0:
+        second_c = min(second_c, cost0)
+    if second_c - best_c < _LOC_MARGIN:
+        return None
+    if best == 0 and tracked_next is not None and ends[0] == tracked_next % n:
+        return None
+    d_signed = best if best <= n // 2 else best - n
+    return {
+        "shift": d_signed,
+        "cost": round(best_c, 3),
+        "costBefore": round(cost0, 3),
+        "next": ends[best] % n,
+        "window": w,
+    }
+
+
 def merge_lap_samples(
     lap1: list[dict[str, Any]],
     lap2: list[dict[str, Any]],
@@ -674,6 +809,10 @@ class TrackController:
         self._profile_cache: tuple[Any, list[dict[str, Any]]] | None = None
         self._seg_entered_at: float | None = None
         self._seg_travel_ms: dict[int, float] = {}
+        # Auto-correction de position en course
+        self._race_traits = 0
+        self._race_hist: list[dict[str, Any]] = []
+        self._race_partial: dict[str, Any] | None = None
         self.map: dict[str, Any] | None = self._load_map()
         self.course_name: str | None = (self.map or {}).get("name") if self.map else None
         if self.map and self.map.get("partCount"):
@@ -1279,6 +1418,9 @@ class TrackController:
         self.race_vehicle = vehicle_id
         self.current_segment = self.start_segment
         self._seg_entered_at = time.time()
+        self._race_traits = 0
+        self._race_hist = []
+        self._race_partial = None
         plan = self.race_speed_plan(self.current_segment)
         seg = self.map["segments"][self.current_segment]
         self._emit(
@@ -1522,6 +1664,68 @@ class TrackController:
             expected = segs[finished_idx]
             matched = samples_match(sample, expected, ratio=_RACE_MATCH_RATIO)
             now = time.time()
+            self._race_traits += 1
+
+            # ——— Auto-correction de position (rotation des roues = empreinte du tracé) ———
+            advance = 1
+            cost = None
+            resync: dict[str, Any] | None = None
+            first_trait = self._race_traits == 1  # départ en cours de bout : mesure partielle
+            if not first_trait:
+                # Trait trop court (parasite) : on cumule jusqu'à couvrir un bout
+                part = self._race_partial
+                tl = sample["left"] + (part["l"] if part else 0.0)
+                tr = sample["right"] + (part["r"] if part else 0.0)
+                held = part["count"] if part else 0
+                # Bien positionné = les 2 derniers traits collaient tels quels (1 bout, coût bas)
+                recent = self._race_hist[-2:]
+                aligned = len(recent) >= 2 and all(
+                    e["k"] == 1 and e["cost"] <= _LOC_OK for e in recent
+                )
+                advance, cost = choose_advance(
+                    segs, finished_idx, tl, tr, allow_local=aligned or held > 0 or not _LOC_GATE
+                )
+                exp_len = segment_length(expected.get("left", 0), expected.get("right", 0))
+                got_len = segment_length(tl, tr)
+                if (
+                    cost > _LOC_OK
+                    and advance == 1
+                    and exp_len > 0
+                    and got_len < 0.6 * exp_len
+                    and held < _LOC_MAX_PARTIAL
+                    and (aligned or held > 0 or not _LOC_GATE)
+                ):
+                    self._race_partial = {"l": tl, "r": tr, "count": held + 1}
+                    self._emit(
+                        {
+                            "type": "racePartialTrait",
+                            "vehicleId": vehicle_id,
+                            "currentSegment": finished_idx,
+                            "sample": {"left": sample["left"], "right": sample["right"]},
+                            "accumulated": {"left": round(tl, 1), "right": round(tr, 1)},
+                        }
+                    )
+                    return
+                self._race_partial = None
+                self._race_hist.append(
+                    {
+                        "l": tl,
+                        "r": tr,
+                        "start": finished_idx,
+                        "k": advance,
+                        # un trait « expliqué » par une perte/parasite reste suspect :
+                        # plusieurs d'affilée = on est probablement perdu
+                        "cost": cost + (_LOC_LOCAL_PENALTY if (advance > 1 or held > 0) else 0.0),
+                    }
+                )
+                if len(self._race_hist) > 8:
+                    del self._race_hist[:-8]
+                resync = window_shift(
+                    segs, self._race_hist, tracked_next=(finished_idx + advance) % n
+                )
+            else:
+                self._race_partial = None
+
             if self._seg_entered_at is not None:
                 traveled = max(0.0, (now - self._seg_entered_at) * 1000.0)
                 # Lissage léger si on a déjà une mesure pour ce bout
@@ -1529,8 +1733,34 @@ class TrackController:
                 if prev is not None and prev > 60:
                     traveled = 0.65 * prev + 0.35 * traveled
                 self._seg_travel_ms[finished_idx] = traveled
-            # Même si un peu bruité (jusqu'à ~1.3), on avance au bout suivant
-            next_idx = (finished_idx + 1) % n
+            # Avance de `advance` bouts (1 = normal ; >1 = trait(s) perdu(s))
+            next_idx = (finished_idx + advance) % n
+            if resync is not None:
+                next_idx = int(resync["next"]) % n
+                self._race_hist = []
+                self._race_partial = None
+                self._emit(
+                    {
+                        "type": "raceResync",
+                        "vehicleId": vehicle_id,
+                        "fromSegment": (finished_idx + advance) % n,
+                        "toSegment": next_idx,
+                        "shift": resync["shift"],
+                        "cost": resync["cost"],
+                        "costBefore": resync["costBefore"],
+                        "window": resync["window"],
+                    }
+                )
+            elif advance > 1:
+                self._emit(
+                    {
+                        "type": "raceSkippedTrait",
+                        "vehicleId": vehicle_id,
+                        "fromSegment": finished_idx,
+                        "toSegment": next_idx,
+                        "advance": advance,
+                    }
+                )
             self.current_segment = next_idx
             self._seg_entered_at = now
             plan = self.race_speed_plan(next_idx)
@@ -1553,6 +1783,9 @@ class TrackController:
                     "brakeAtFraction": self.brake_at_fraction,
                     "matched": matched,
                     "matchRatio": _RACE_MATCH_RATIO,
+                    "advance": advance,
+                    "resynced": resync is not None,
+                    "matchCost": None if cost is None else round(cost, 3),
                     "sample": {"left": sample["left"], "right": sample["right"]},
                     "expected": {"left": expected.get("left"), "right": expected.get("right")},
                 }
