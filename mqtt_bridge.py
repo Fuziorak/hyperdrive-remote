@@ -401,8 +401,15 @@ class MqttBridge:
         delay_ms = plan.get("brakeAfterMs")
         seg_idx = int(plan.get("segmentIndex", -1))
         is_straight = bool(plan.get("isStraight"))
-        # Accel un peu plus franche en entrée de droit ; virage = maintien
-        accel = 1600 if is_straight else 1000
+        prev = self._race_last_cmd_speed
+        # Profil précalculé : on applique juste la vitesse du bout.
+        # Décélération franche (avant virage), accélération franche (droit), sinon maintien.
+        if prev is not None and entry < int(prev) - 15:
+            accel = 2000
+        elif prev is not None and entry > int(prev) + 15:
+            accel = 1600 if is_straight else 1000
+        else:
+            accel = 1400
         self.set_speed(vehicle_id, entry, accel, manual=False)
         self._race_lights_for_speed_change(vehicle_id, entry)
         # Frein mi-parcours uniquement sur les droits (jamais accélérer dans un virage)

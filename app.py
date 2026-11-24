@@ -55,6 +55,7 @@ def _broadcast(event: dict[str, Any]) -> None:
         "mappingStopped",
         "mappingCleared",
         "mappingProgress",
+        "brakeStrengthSet",
         "mappingLapClosed",
         "mappingCelebrate",
         "latencyResult",
@@ -493,6 +494,19 @@ def api_track_lookahead():
         out = orch.track.set_lookahead(
             int(data.get("segments", data.get("lookaheadSegments", 1))),
             brake_at_fraction=float(frac) if frac is not None else None,
+        )
+        return jsonify({**out, "track": orch.track.snapshot()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/track/brake-strength")
+def api_track_brake_strength():
+    """Curseur de freinage avant virage : 0–150 % (100 = vitesse du virage)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        out = orch.track.set_brake_strength(
+            float(data.get("pct", data.get("brakeStrengthPct", 100)))
         )
         return jsonify({**out, "track": orch.track.snapshot()})
     except Exception as exc:

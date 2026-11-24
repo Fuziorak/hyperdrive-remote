@@ -39,7 +39,9 @@ _CURVE_SPEED_AT_0 = 500  # 0% ralentissement → 500 dans les virages ; 100% →
 # Anticipation : regarder N bouts suivants pour la cible de freinage.
 _DEFAULT_LOOKAHEAD = 1
 # Freinage à une fraction du droit (temps estimé / mesuré entre traits).
-_DEFAULT_BRAKE_AT = 0.75  # 3/4 du chemin
+_DEFAULT_BRAKE_AT = 0.75  # 3/4 du chemin (ancien frein mi-bout, non utilisé)
+# Freinage avant virage : 100 % = vitesse du virage dès l'entrée du droit précédent.
+_DEFAULT_BRAKE_STRENGTH = 100.0
 # Conversion empirique longueur_map → temps : length / (speed * scale) secondes.
 _DIST_PER_SPEED_PER_SEC = 0.07
 _MAPS_DIR = Path(__file__).resolve().parent / "maps"
@@ -349,29 +351,127 @@ def race_speed_for_segment(
     return int(max(0, min(1000, round(speed))))
 
 
-def _future_min_speed(
+def _is_straight_seg(seg: dict[str, Any]) -> bool:
+    left = float(seg.get("left", 0))
+    right = float(seg.get("right", 0))
+    turn = seg.get("turn") or classify_turn(left, right)
+    return turn == "straight" and turn_tightness(left, right) < 0.12
+
+
+def _turn_dir(seg: dict[str, Any]) -> str:
+    left = float(seg.get("left", 0))
+    right = float(seg.get("right", 0))
+    return str(seg.get("turn") or classify_turn(left, right))
+
+
+def preturn_speed(straight_max: int, turn_speed: int, brake_strength_pct: float) -> int:
+    """Vitesse du droit juste avant un virage.
+
+    100 % = vitesse du virage (freine à fond dès l'entrée du droit).
+    0 % = pas de freinage (reste à la vitesse des droits).
+    150 % = moitié de la vitesse du virage (freine plus fort que nécessaire).
+    """
+    top = int(max(0, min(1000, straight_max)))
+    tv = int(turn_speed)
+    if top <= tv:
+        return top
+    pct = max(0.0, min(150.0, float(brake_strength_pct)))
+    if pct <= 100.0:
+        v = top - (top - tv) * (pct / 100.0)
+    else:
+        v = tv * (1.0 - (pct - 100.0) / 100.0)
+    return int(max(0, min(1000, round(v))))
+
+
+def build_race_profile(
     segments: list[dict[str, Any]],
-    index: int,
     slowdown_pct: float,
     *,
-    straight_max: int,
-    lookahead: int,
-) -> int | None:
-    """Vitesse mini des N bouts *suivants* (hors bout courant). None si lookahead off."""
-    if not segments:
-        return None
-    look = max(0, min(3, int(lookahead)))
-    if look <= 0:
-        return None
+    straight_max: int = _STRAIGHT_MAX_SPEED,
+    lookahead: int = _DEFAULT_LOOKAHEAD,
+    brake_strength_pct: float = _DEFAULT_BRAKE_STRENGTH,
+) -> list[dict[str, Any]]:
+    """Profil de vitesse complet, calculé UNE fois avant le départ.
+
+    - Droits : vitesse max.
+    - Droit(s) juste avant un virage (jusqu'à `lookahead` bouts) : vitesse du virage
+      ajustée par le curseur de freinage → le robot ralentit dès l'entrée du bout.
+    - Virages : une vitesse fixe par virage (moyenne de ses bouts), pas d'accélération.
+    La piste est une boucle : le dernier bout précède le premier.
+    """
     n = len(segments)
-    idx = int(index) % n
-    upcoming: int | None = None
-    for k in range(1, look + 1):
-        sp = race_speed_for_segment(
-            segments[(idx + k) % n], slowdown_pct, straight_max=straight_max
-        )
-        upcoming = sp if upcoming is None else min(upcoming, sp)
-    return upcoming
+    if n <= 0:
+        return []
+    straight = [_is_straight_seg(s) for s in segments]
+    top = int(max(0, min(1000, straight_max)))
+    speeds: list[int] = [top] * n
+    kinds: list[str] = ["straight"] * n
+    run_ids: list[int | None] = [None] * n
+
+    if not any(not s for s in straight):
+        return [
+            {"index": i, "kind": "straight", "speed": top, "runId": None}
+            for i in range(n)
+        ]
+
+    dirs = [None if straight[i] else _turn_dir(segments[i]) for i in range(n)]
+    # Départ des runs : un bout de virage dont le précédent n'est pas du même virage
+    start = None
+    for i in range(n):
+        prev = (i - 1) % n
+        if dirs[i] is not None and dirs[i] != dirs[prev]:
+            start = i
+            break
+    if start is None:
+        # Tout est un seul virage dans la même direction
+        start = 0
+
+    runs: list[list[int]] = []
+    i = 0
+    while i < n:
+        idx = (start + i) % n
+        if dirs[idx] is None:
+            i += 1
+            continue
+        run = [idx]
+        j = i + 1
+        while j < n and dirs[(start + j) % n] == dirs[idx]:
+            run.append((start + j) % n)
+            j += 1
+        runs.append(run)
+        i = j
+
+    run_speed: dict[int, int] = {}
+    for rid, run in enumerate(runs):
+        per_bout = [
+            race_speed_for_segment(segments[k], slowdown_pct, straight_max=top)
+            for k in run
+        ]
+        v = int(round(sum(per_bout) / max(1, len(per_bout))))
+        run_speed[rid] = v
+        for k in run:
+            speeds[k] = v
+            kinds[k] = "turn"
+            run_ids[k] = rid
+
+    look = max(0, min(3, int(lookahead)))
+    if look > 0:
+        for rid, run in enumerate(runs):
+            first = run[0]
+            tv = run_speed[rid]
+            pre = preturn_speed(top, tv, brake_strength_pct)
+            for step in range(1, look + 1):
+                k = (first - step) % n
+                if dirs[k] is not None:
+                    break  # autre virage juste avant : rien à freiner de plus
+                speeds[k] = min(speeds[k], pre)
+                kinds[k] = "preturn"
+                run_ids[k] = rid
+
+    return [
+        {"index": i, "kind": kinds[i], "speed": int(speeds[i]), "runId": run_ids[i]}
+        for i in range(n)
+    ]
 
 
 def estimate_travel_ms(length: float, speed: int, measured_ms: float | None = None) -> float:
@@ -391,15 +491,13 @@ def race_speed_plan(
     lookahead: int = _DEFAULT_LOOKAHEAD,
     brake_at_fraction: float = _DEFAULT_BRAKE_AT,
     measured_ms: float | None = None,
+    brake_strength_pct: float = _DEFAULT_BRAKE_STRENGTH,
+    profile: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Plan de vitesse selon le type de bout.
+    """Plan de vitesse d'un bout = simple lecture du profil précalculé.
 
-    Droit :
-      - accélère en entrée (vitesse max droite)
-      - si un virage arrive dans le lookahead → freine à 2/3 ou 3/4 du droit
-    Virage :
-      - maintient la vitesse de croisière virage tout le bout
-      - n'accélère jamais ici ; l'accélération n'a lieu qu'en entrant sur un droit
+    Plus de timer de frein mi-parcours : la vitesse est fixée à l'entrée du bout.
+    (`brake_at_fraction` / `measured_ms` gardés pour compatibilité, non utilisés.)
     """
     if not segments:
         return {
@@ -413,47 +511,30 @@ def race_speed_plan(
     n = len(segments)
     idx = int(index) % n
     seg = segments[idx]
+    if profile is None or len(profile) != n:
+        profile = build_race_profile(
+            segments,
+            slowdown_pct,
+            straight_max=straight_max,
+            lookahead=lookahead,
+            brake_strength_pct=brake_strength_pct,
+        )
+    entry_info = profile[idx]
+    entry = int(entry_info["speed"])
     left = float(seg.get("left", 0))
     right = float(seg.get("right", 0))
-    turn = seg.get("turn") or classify_turn(left, right)
-    tight = turn_tightness(left, right)
-    is_straight = turn == "straight" and tight < 0.12
     length = segment_length(left, right)
-    cruise = race_speed_for_segment(seg, slowdown_pct, straight_max=straight_max)
-    future = _future_min_speed(
-        segments,
-        idx,
-        slowdown_pct,
-        straight_max=straight_max,
-        lookahead=lookahead,
-    )
-    frac = max(0.0, min(0.95, float(brake_at_fraction)))
-
-    if is_straight:
-        # Début de droit = plein gaz ; frein anticipé seulement si la suite est plus lente
-        entry = int(cruise)
-        brake_to = entry
-        brake_after: int | None = None
-        if future is not None and future < entry and frac > 0:
-            brake_to = int(future)
-            total_ms = estimate_travel_ms(length, entry, measured_ms)
-            brake_after = int(max(80, min(total_ms * 0.92, total_ms * frac)))
-    else:
-        # Virage = croisière constante ; pas de frein mi-parcours ni d'accélération
-        entry = int(cruise)
-        brake_to = entry
-        brake_after = None
-
     return {
         "segmentIndex": idx,
-        "entrySpeed": int(entry),
-        "brakeSpeed": int(brake_to),
-        "brakeAfterMs": brake_after,
+        "entrySpeed": entry,
+        "brakeSpeed": entry,
+        "brakeAfterMs": None,
         "length": round(length, 2),
-        "isStraight": is_straight,
+        "isStraight": entry_info["kind"] != "turn",
+        "kind": entry_info["kind"],
         "estimatedTravelMs": int(estimate_travel_ms(length, entry, measured_ms)),
-        "brakeAtFraction": frac,
-        "futureMinSpeed": future,
+        "brakeAtFraction": max(0.0, min(0.95, float(brake_at_fraction))),
+        "brakeStrengthPct": float(brake_strength_pct),
     }
 
 
@@ -573,6 +654,8 @@ class TrackController:
         self.straight_max_speed: int = _STRAIGHT_MAX_SPEED
         self.lookahead_segments: int = _DEFAULT_LOOKAHEAD  # 0=off, 1–3 bouts d’avance
         self.brake_at_fraction: float = _DEFAULT_BRAKE_AT  # 0=off, ~0.67=2/3, ~0.75=3/4
+        self.brake_strength_pct: float = _DEFAULT_BRAKE_STRENGTH  # 0–150 %, 100 = vitesse du virage
+        self._profile_cache: tuple[Any, list[dict[str, Any]]] | None = None
         self._seg_entered_at: float | None = None
         self._seg_travel_ms: dict[int, float] = {}
         self.map: dict[str, Any] | None = self._load_map()
@@ -639,6 +722,8 @@ class TrackController:
             "straightMaxSpeed": self.straight_max_speed,
             "lookaheadSegments": self.lookahead_segments,
             "brakeAtFraction": self.brake_at_fraction,
+            "brakeStrengthPct": self.brake_strength_pct,
+            "raceProfile": self.race_profile(),
             "raceMatchRatio": _RACE_MATCH_RATIO,
         }
 
@@ -1063,6 +1148,44 @@ class TrackController:
             "brakeAtFraction": self.brake_at_fraction,
         }
 
+    def set_brake_strength(self, pct: float) -> dict[str, Any]:
+        """Curseur de freinage avant virage (0–150 %, 100 = vitesse du virage)."""
+        self.brake_strength_pct = max(0.0, min(150.0, float(pct)))
+        self._emit(
+            {
+                "type": "brakeStrengthSet",
+                "brakeStrengthPct": self.brake_strength_pct,
+                "raceProfile": self.race_profile(),
+            }
+        )
+        return {"ok": True, "brakeStrengthPct": self.brake_strength_pct}
+
+    def race_profile(self) -> list[dict[str, Any]]:
+        """Profil de vitesse précalculé (recalculé seulement si map/réglages changent)."""
+        if not self.map or not self.map.get("segments"):
+            return []
+        segs = self.map["segments"]
+        key = (
+            id(self.map),
+            len(segs),
+            self.turn_slowdown_pct,
+            self.straight_max_speed,
+            self.lookahead_segments,
+            self.brake_strength_pct,
+        )
+        cached = self._profile_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        profile = build_race_profile(
+            segs,
+            self.turn_slowdown_pct,
+            straight_max=self.straight_max_speed,
+            lookahead=self.lookahead_segments,
+            brake_strength_pct=self.brake_strength_pct,
+        )
+        self._profile_cache = (key, profile)
+        return profile
+
     def race_speed_plan(self, index: int | None = None) -> dict[str, Any]:
         if not self.map or not self.map.get("segments"):
             return {
@@ -1084,6 +1207,8 @@ class TrackController:
             lookahead=self.lookahead_segments,
             brake_at_fraction=self.brake_at_fraction,
             measured_ms=measured,
+            brake_strength_pct=self.brake_strength_pct,
+            profile=self.race_profile(),
         )
 
     def target_speed_for_segment(self, index: int) -> int:

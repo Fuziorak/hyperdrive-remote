@@ -99,6 +99,8 @@
       straightMaxSpeed: 1000,
       lookaheadSegments: 1,
       brakeAtFraction: 0.75,
+      brakeStrengthPct: 100,
+      raceProfile: [],
     },
   };
 
@@ -312,6 +314,26 @@
     if ($("straightMaxValue")) $("straightMaxValue").textContent = String(v);
   }
 
+  function updateBrakeHint() {
+    const prof = state.track.raceProfile || [];
+    const pre = prof.find((p) => p.kind === "preturn");
+    const el = $("brakeStrengthSpeedHint");
+    if (el) el.textContent = pre ? String(pre.speed) : "—";
+  }
+
+  function syncBrakeStrengthUI(pct, { force = false } = {}) {
+    const el = $("brakeStrengthSlider");
+    if (!force && isUserEditing(el)) {
+      state.track.brakeStrengthPct = Math.max(0, Math.min(150, Number(el.value) || 0));
+      return;
+    }
+    const v = Math.max(0, Math.min(150, Number(pct) || 0));
+    state.track.brakeStrengthPct = v;
+    setFieldValue(el, v, { force });
+    if ($("brakeStrengthValue")) $("brakeStrengthValue").textContent = String(v);
+    updateBrakeHint();
+  }
+
   function syncLookaheadUI(segments, brakeAtFraction, { force = false } = {}) {
     const lookEl = $("lookaheadSlider");
     const brakeEl = $("brakeFractionSelect");
@@ -493,6 +515,9 @@
         track.brakeAtFraction ?? state.track.brakeAtFraction
       );
     }
+    if (track.raceProfile) state.track.raceProfile = track.raceProfile;
+    if (track.brakeStrengthPct != null) syncBrakeStrengthUI(track.brakeStrengthPct);
+    else updateBrakeHint();
     if ($("raceActiveMapName")) {
       $("raceActiveMapName").textContent = state.track.courseName || (state.track.map ? "map chargée" : "—");
     }
@@ -2083,6 +2108,10 @@
       case "straightMaxSet":
         syncStraightMaxUI(msg.straightMaxSpeed ?? state.track.straightMaxSpeed);
         break;
+      case "brakeStrengthSet":
+        if (msg.raceProfile) state.track.raceProfile = msg.raceProfile;
+        syncBrakeStrengthUI(msg.brakeStrengthPct ?? state.track.brakeStrengthPct);
+        break;
       case "lookaheadSet":
         syncLookaheadUI(
           msg.lookaheadSegments ?? state.track.lookaheadSegments,
@@ -2358,6 +2387,7 @@
     "straightMaxSlider",
     "lookaheadSlider",
     "brakeFractionSelect",
+    "brakeStrengthSlider",
     "holdHzSlider",
     "brokerHost",
     "brokerPort",
@@ -2518,6 +2548,27 @@
       }
     }, 180);
   }
+  let _brakeStrengthTimer = null;
+  $("brakeStrengthSlider")?.addEventListener("input", () => {
+    const pct = Number($("brakeStrengthSlider").value) || 0;
+    markFieldDirty("brakeStrengthSlider");
+    state.track.brakeStrengthPct = pct;
+    if ($("brakeStrengthValue")) $("brakeStrengthValue").textContent = String(pct);
+    clearTimeout(_brakeStrengthTimer);
+    _brakeStrengthTimer = setTimeout(async () => {
+      try {
+        const data = await api("/api/track/brake-strength", {
+          method: "POST",
+          body: JSON.stringify({ pct }),
+        });
+        clearFieldDirty("brakeStrengthSlider");
+        applyTrackSnapshot(data.track);
+      } catch (err) {
+        toast(err.message);
+      }
+    }, 180);
+  });
+
   $("lookaheadSlider").addEventListener("input", pushLookahead);
   $("brakeFractionSelect").addEventListener("change", pushLookahead);
 
@@ -2544,6 +2595,11 @@
         method: "POST",
         body: JSON.stringify({ segments: look, brakeAtFraction }),
       });
+      const brakeStrength = Number($("brakeStrengthSlider")?.value ?? 100);
+      await api("/api/track/brake-strength", {
+        method: "POST",
+        body: JSON.stringify({ pct: brakeStrength }),
+      });
       const id = requireSlot("A");
       const data = await api("/api/track/race/start", {
         method: "POST",
@@ -2552,7 +2608,7 @@
       applyTrackSnapshot(data.track);
       $("raceMapPicker").hidden = true;
       toast(
-        `Course · droits ${straight} · frein ${brakeFractionLabel(brakeAtFraction)} · virages ~${curveSpeedHint(pct)}`
+        `Course · droits ${straight} · frein ${brakeStrength}% · virages ~${curveSpeedHint(pct)}`
       );
     } catch (err) {
       if (err.message !== "no vehicle") toast(err.message);

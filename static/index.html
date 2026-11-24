@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hyperdrive Remote</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261118f" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261124a" />
 </head>
 <body class="theme-dark">
   <div class="app-bg" aria-hidden="true"></div>
@@ -335,14 +335,20 @@
               <input id="turnSlowdownSlider" type="range" min="0" max="100" step="1" value="40" />
             </label>
             <label class="slowdown-label">
-              Frein anticipé
-              <span class="slowdown-readout">à <strong id="brakeFractionLabel">3/4</strong> · look <strong id="lookaheadValue">1</strong></span>
-              <select id="brakeFractionSelect">
+              Freinage avant virage
+              <span class="slowdown-readout"><strong id="brakeStrengthValue">100</strong>% → ~<strong id="brakeStrengthSpeedHint">—</strong></span>
+              <input id="brakeStrengthSlider" type="range" min="0" max="150" step="5" value="100" />
+              <span class="hint">0 % = pas de frein · 100 % = vitesse du virage · 150 % = moitié de la vitesse du virage</span>
+            </label>
+            <label class="slowdown-label">
+              Bouts freinés avant virage
+              <span class="slowdown-readout"><strong id="lookaheadValue">1</strong> bout(s)<span hidden> · <strong id="brakeFractionLabel">3/4</strong></span></span>
+              <input id="lookaheadSlider" type="range" min="0" max="3" step="1" value="1" />
+              <select id="brakeFractionSelect" hidden>
                 <option value="0">Off</option>
                 <option value="0.6667">2/3</option>
                 <option value="0.75" selected>3/4</option>
               </select>
-              <input id="lookaheadSlider" type="range" min="0" max="3" step="1" value="1" />
             </label>
           </div>
 
@@ -496,6 +502,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20261118f"></script>
+  <script src="/static/app.js?v=20261124a"></script>
 </body>
 </html>
