@@ -273,6 +273,11 @@ _LOC_BAD = 0.40      # coût moyen au-dessus duquel la position actuelle est sus
 _LOC_GOOD = 0.35     # coût moyen max pour accepter une position candidate
 _LOC_MARGIN = 0.25   # écart exigé avec la 2e meilleure position (évite les ambiguïtés)
 _LOC_WINDOW = 3      # nombre de traits récents comparés à la carte
+_LOC_TURN_MIN = 0.20     # |L-R|/max à partir duquel un trait est un vrai virage (repère)
+_LOC_ANCHOR = True       # priorité aux virages pour se recaler
+_LOC_ANCHOR_TURN_MAX = 0.60   # coût max du virage lui-même pour être candidat
+_LOC_ANCHOR_DIST = 0.02  # léger avantage aux virages proches de la position suivie
+_LOC_ANCHOR_MARGIN = 0.10
 _LOC_GATE = False        # n'explique un écart par un trait perdu/parasite que si on est bien calé
 _LOC_LOCAL_PENALTY = 0.45  # coût ajouté à un trait expliqué par une perte/un parasite
 _LOC_SKIP_PENALTY = 0.08  # malus par bout « sauté » dans un découpage de fenêtre
@@ -325,6 +330,101 @@ def choose_advance(
         if ck <= _LOC_OK and ck < c1 - 0.15 and ck < best_c:
             best_k, best_c = k, ck
     return best_k, best_c
+
+
+def turn_shape(l: float, r: float) -> float:
+    """(L-R)/max : ~0 = ligne droite, signe = sens du virage."""
+    l, r = abs(float(l)), abs(float(r))
+    return (l - r) / max(l, r, _LOC_FLOOR)
+
+
+def is_distinct_turn(l: float, r: float) -> bool:
+    return (
+        max(abs(float(l)), abs(float(r))) >= _LOC_FLOOR
+        and abs(turn_shape(l, r)) >= _LOC_TURN_MIN
+    )
+
+
+def _context_cost(
+    segs: list[dict[str, Any]],
+    hist: list[dict[str, Any]],
+    idx: int,
+    end: int,
+    depth: int,
+) -> float:
+    """Coût des `depth` traits avant hist[idx] s'ils se terminent juste avant `end` (traits perdus tolérés)."""
+    if depth <= 0 or idx < 0:
+        return 0.0
+    n = len(segs)
+    e = hist[idx]
+    best = 9.0
+    for k in (1, 2):
+        start = (end - k) % n
+        c = lr_cost(e["l"], e["r"], *span_lr(segs, start, k)) + _LOC_SKIP_PENALTY * (k - 1)
+        c += _context_cost(segs, hist, idx - 1, start, depth - 1)
+        best = min(best, c)
+    return best
+
+
+def turn_anchor(
+    segs: list[dict[str, Any]],
+    hist: list[dict[str, Any]],
+    tracked_idx: int,
+    advance: int,
+) -> dict[str, Any] | None:
+    """Priorité aux virages : un trait « rond » (L ≠ R) est un repère fiable.
+
+    Si le trait qu'on vient de mesurer est un vrai virage mais que la position suivie
+    n'est pas un virage de même sens (on se croit dans une ligne droite, ou dans l'autre
+    sens), on cherche parmi les virages de la carte celui qui colle le mieux (le virage lui-même
+    + les 2 traits précédents), le plus proche de la position suivie en cas d'égalité.
+    """
+    n = len(segs)
+    if n < 4 or not hist:
+        return None
+    last = hist[-1]
+    if not is_distinct_turn(last["l"], last["r"]):
+        return None
+    tracked_cost = lr_cost(last["l"], last["r"], *span_lr(segs, tracked_idx % n, max(1, advance)))
+    if tracked_cost <= _LOC_OK:
+        return None  # la position suivie est bien un virage compatible
+    sign = 1 if turn_shape(last["l"], last["r"]) > 0 else -1
+    cands: list[tuple[float, float, int, int]] = []  # (score ajusté, score brut, position, distance)
+    for p in range(n):
+        s = segs[p]
+        if not is_distinct_turn(s.get("left", 0), s.get("right", 0)):
+            continue
+        if (turn_shape(s["left"], s["right"]) > 0) != (sign > 0):
+            continue
+        c0 = lr_cost(last["l"], last["r"], *span_lr(segs, p, 1))
+        if c0 > _LOC_ANCHOR_TURN_MAX:
+            continue
+        depth = min(2, len(hist) - 1)
+        ctx = _context_cost(segs, hist, len(hist) - 2, p, depth)
+        score = (c0 + ctx) / (1 + depth)
+        d = min((p - tracked_idx) % n, (tracked_idx - p) % n)
+        cands.append((score + _LOC_ANCHOR_DIST * d, score, p, d))
+    if not cands:
+        return None
+    cands.sort()
+    best_adj, best, p, d = cands[0]
+    if best > _LOC_GOOD:
+        return None
+    if len(cands) > 1 and cands[1][0] - best_adj < _LOC_ANCHOR_MARGIN:
+        return None  # deux virages aussi plausibles l'un que l'autre : on attend plus d'indices
+    if p == tracked_idx % n:
+        return None
+    shift = (p - tracked_idx) % n
+    if shift > n // 2:
+        shift -= n
+    return {
+        "shift": shift,
+        "cost": round(best, 3),
+        "costBefore": round(tracked_cost, 3),
+        "next": (p + 1) % n,
+        "window": 1 + min(2, len(hist) - 1),
+        "anchor": "turn",
+    }
 
 
 def window_shift(
@@ -1720,9 +1820,17 @@ class TrackController:
                 )
                 if len(self._race_hist) > 8:
                     del self._race_hist[:-8]
-                resync = window_shift(
-                    segs, self._race_hist, tracked_next=(finished_idx + advance) % n
+                # 1) Repère virage (L ≠ R) : on ne doit pas se croire dans une ligne droite
+                resync = (
+                    turn_anchor(segs, self._race_hist, finished_idx, advance)
+                    if _LOC_ANCHOR
+                    else None
                 )
+                # 2) Sinon, recalage par fenêtre de traits
+                if resync is None:
+                    resync = window_shift(
+                        segs, self._race_hist, tracked_next=(finished_idx + advance) % n
+                    )
             else:
                 self._race_partial = None
 
