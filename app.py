@@ -15,6 +15,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 import debug_log
+import race_journal
 from mqtt_bridge import MqttBridge
 from orchestrator import LIGHT_CHANNELS, LIGHT_EFFECTS
 
@@ -39,6 +40,8 @@ def _cancel_idle_shutdown() -> None:
 
 
 def _broadcast(event: dict[str, Any]) -> None:
+    # Journal de course (départ/fin, traits, consignes, état voiture) → debug.log, source "race"
+    race_journal.journal.on_event(event, orch)
     # Avoid flooding the file with high-frequency telemetry; keep key events.
     et = event.get("type")
     if et in {
@@ -70,6 +73,7 @@ def _broadcast(event: dict[str, Any]) -> None:
         "courseDeleted",
         "manualOverride",
         "turnSlowdownSet",
+        "intentConflict",
     }:
         debug_log.info("event", f"broadcast {et}", event=event)
     elif et == "mqttOut":

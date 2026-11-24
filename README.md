@@ -45,6 +45,19 @@ Puis ouvrir [http://127.0.0.1:5050](http://127.0.0.1:5050).
 python test_mqtt.py
 ```
 
+## Journal de course (`debug.log`)
+
+Chaque course est journalisée dans `debug.log` avec `"source": "race"` et un `raceId` (ex. `R20261124-134918`) :
+
+- `RACE START` : heure, voiture (batterie, onTrack, rssi…), config du code (révision git, vitesses ligne droite / virage / avant-virage, profil par bout, carte, hold…).
+- `trait` : une ligne par trait mesuré (dt, bout terminé → suivant, L/R mesuré vs attendu, ratio, `matched`, vitesse commandée, état voiture, `flag` si trait perdu ou parasite suspecté).
+- `CMD vitesse` / `CMD feux` : chaque consigne envoyée à la voiture (les renvois Hold identiques sont comptés, pas listés).
+- `CAR état` : changements d'état de la voiture (onTrack, batterie, vitesse mesurée, rssi…).
+- `CONFLIT D'INTENTION` : un autre appareil du broker a commandé la même voiture.
+- `RACE STOP` : raison (Stop / cockpit a repris la main / nouvelle course), durée, nombre de traits, % de traits cohérents avec la carte, premier trait décalé, résumé des commandes.
+
+Filtrer par exemple : `rg '"source": "race"' debug.log`.
+
 ## Utilisation
 
 1. **Connecter MQTT**
