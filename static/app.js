@@ -388,6 +388,9 @@
         signal: ctrl.signal,
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 404 && !data.error) {
+        throw new Error(`Route ${path} introuvable — le serveur n'est pas à jour, relance app.py`);
+      }
       if (!res.ok || data.ok === false) {
         throw new Error(data.error || res.statusText || "Erreur");
       }
