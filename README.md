@@ -26,6 +26,11 @@ pip install -r requirements.txt
 wscript start_hyperdrive.vbs
 ```
 
+**macOS (Apple) :** double-clic sur `Launch Hyperdrive Apple.command`. Il crée tout seul un environnement `.venv`, installe les dépendances (internet requis au 1er lancement), démarre le serveur et ouvre le navigateur. Prérequis : Python 3 (`brew install python` ou python.org).
+- Si macOS refuse : clic droit sur le fichier → **Ouvrir** → **Ouvrir** (une seule fois).
+- Si « permission refusée » (cas du ZIP téléchargé sur GitHub) : dans le Terminal, `chmod +x "Launch Hyperdrive Apple.command"`. Avec `git clone`, ce n'est pas nécessaire.
+- Garder la fenêtre Terminal ouverte pendant l'utilisation ; la fermer arrête le serveur.
+
 **Manuel :**
 
 ```bash

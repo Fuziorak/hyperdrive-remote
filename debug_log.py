@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+import sys
 import threading
 import traceback
 from datetime import datetime, timezone
@@ -96,7 +97,7 @@ def collect_network_snapshot() -> dict[str, Any]:
     snap: dict[str, Any] = {"brokerProbe": probe_broker()}
     try:
         out = subprocess.check_output(
-            ["ipconfig"],
+            ["ipconfig"] if sys.platform.startswith("win") else ["ifconfig"],
             text=True,
             errors="replace",
             timeout=8,
@@ -128,7 +129,11 @@ def collect_network_snapshot() -> dict[str, Any]:
 
     try:
         out = subprocess.check_output(
-            ["ping", "-n", "2", "-w", "1000", "10.42.0.1"],
+            (
+                ["ping", "-n", "2", "-w", "1000", "10.42.0.1"]
+                if sys.platform.startswith("win")
+                else ["ping", "-c", "2", "-t", "2", "10.42.0.1"]
+            ),
             text=True,
             errors="replace",
             timeout=8,
